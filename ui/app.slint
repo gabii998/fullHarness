@@ -1,5 +1,7 @@
 import { VerticalBox, HorizontalBox, ScrollView, ListView, LineEdit, TextEdit, ComboBox, Button, CheckBox, SpinBox } from "std-widgets.slint";
 
+export struct CaptureRow { index: int, name: string, detail: string }
+export struct AttachmentRow { id: string, name: string, image: image }
 export struct HttpRequestRow { id: string, title: string, method: string, selected: bool }
 export struct UsageRow { title: string, metric: string, detail: string, hint: string, ratio: float }
 export struct NavigationRow { id: string, title: string, project: bool, selected: bool, status: string }
@@ -319,8 +321,8 @@ component PanelSelect inherits Rectangle {
     in property <int> active-index;
     in property <bool> enabled: true;
     callback selected(int);
-    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP"];
-    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg")];
+    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP", "Imágenes"];
+    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg"), @image-url("assets/captures.svg")];
     Button {
         width: parent.width; height: parent.height;
         enabled: root.enabled; accessible-label: "Panel lateral: " + root.labels[root.active-index];
@@ -330,7 +332,7 @@ component PanelSelect inherits Rectangle {
     Text { x: 36px; width: parent.width - 66px; height: parent.height; text: root.labels[root.active-index]; color: root.enabled ? #e3e7f3 : #68738b; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
     Image { x: parent.width - 22px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("assets/chevron-down.svg"); opacity: root.enabled ? 1 : 0.4; }
     options := PopupWindow {
-        x: 0px; y: root.height + 4px; width: root.width; height: 9 * 36px + 16px;
+        x: 0px; y: root.height + 4px; width: root.width; height: 10 * 36px + 16px;
         close-policy: close-on-click-outside;
         Rectangle {
             background: #192534; border-radius: 8px; border-width: 1px; border-color: #384561;
@@ -392,6 +394,10 @@ export component AppWindow inherits Window {
     default-font-size: 14px;
 
     in property <[NavigationRow]> navigation;
+    in property <string> attachment-data-root;
+    in property <[AttachmentRow]> attachment-rows;
+    in property <bool> attachment-busy: false;
+    callback attach-images(); callback paste-image() -> bool; callback remove-attachment(string); callback apply-attachments(string);
     in property <[TabRow]> tabs;
     in property <[MessageRow]> messages;
     callback chat-bubble-visibility(int, bool);
@@ -560,7 +566,7 @@ export component AppWindow inherits Window {
     in-out property <string> git-action-message;
     in-out property <[GitCommitRow]> git-history;
     in-out property <bool> git-open: false;
-    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : 0;
+    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : root.captures-open ? 9 : 0;
     callback select-panel(int);
     select-panel(index) => {
         root.git-open = index == 1;
@@ -570,7 +576,7 @@ export component AppWindow inherits Window {
         root.docker-open = index == 5;
         root.database-open = index == 6;
         root.logcat-open = index == 7;
-        root.http-open = index == 8;
+        root.http-open = index == 8; root.captures-open = index == 9;
     }
     in-out property <length> side-panel-width: 310px;
     in-out property <length> projects-panel-width: 280px;
@@ -586,11 +592,11 @@ export component AppWindow inherits Window {
     private property <bool> panel-dragging: false;
     private property <length> sidebar-reservation: root.sidebar-progress * (root.panel-width + 12px);
     function update-workspace-layout() {
-        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? 292px : 0px)));
+        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? 292px : 0px)));
         root.projects-width = root.projects-compact ? 72px : clamp(root.projects-panel-width, 260px, root.projects-max-width);
         root.panel-max-width = max(280px, min(800px, root.width - root.projects-width - 360px));
         root.panel-width = clamp(root.side-panel-width, 280px, root.panel-max-width);
-        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? root.panel-width + 12px : 0px) < 520px;
+        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? root.panel-width + 12px : 0px) < 520px;
     }
     changed width => { root.update-workspace-layout(); }
     changed side-panel-width => { root.update-workspace-layout(); }
@@ -609,7 +615,7 @@ export component AppWindow inherits Window {
     in-out property <bool> git-dirty: false;
     in-out property <string> git-status: "Abrí un proyecto para consultar Git.";
     in-out property <[GitRow]> git-files;
-    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-git(); } root.update-workspace-layout(); }
+    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-git(); } root.update-workspace-layout(); }
     changed git-project => {
         root.project-settings-view = false;
         root.project-tasks-view = false;
@@ -647,13 +653,13 @@ export component AppWindow inherits Window {
         if root.terminal-open { root.refresh-terminal(); }
         if root.usage-open { root.refresh-usage(); }
         root.http-variables-open = false;
-        if root.http-open { root.load-http(); }
+        if root.http-open { root.load-http(); } if root.captures-open { root.refresh-captures(); }
     }
     in-out property <bool> files-open: false;
     private property <float> git-progress: root.git-open ? 1 : 0;
     private property <float> files-progress: root.files-open ? 1 : 0;
-    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? 1 : 0;
-    animate git-progress, files-progress, logcat-progress, database-progress, docker-progress, lint-progress, terminal-progress, http-progress { duration: 180ms; easing: ease-out; }
+    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? 1 : 0;
+    animate git-progress, files-progress, logcat-progress, database-progress, docker-progress, lint-progress, terminal-progress, http-progress, captures-progress { duration: 180ms; easing: ease-out; }
     in-out property <bool> database-open: false;
     private property <float> database-progress: root.database-open ? 1 : 0;
     in property <bool> database-busy: false;
@@ -670,7 +676,7 @@ export component AppWindow inherits Window {
     callback refresh-database(bool);
     callback browse-database-schema();
     changed database-open => {
-        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-database(true); }
+        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-database(true); }
         root.update-workspace-layout();
     }
     in-out property <bool> docker-open: false;
@@ -685,7 +691,7 @@ export component AppWindow inherits Window {
     callback refresh-docker();
     callback docker-action(string, string);
     changed docker-open => {
-        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.docker-logs-open = false; root.refresh-docker(); }
+        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.docker-logs-open = false; root.refresh-docker(); }
         root.update-workspace-layout();
     }
     in-out property <bool> lint-open: false;
@@ -712,10 +718,29 @@ export component AppWindow inherits Window {
     callback open-problem-file(string, int);
     callback detect-lint(); callback run-lint(); callback stop-lint(); callback save-lint-config(); callback open-lint-logs();
     changed lint-open => {
-        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.detect-lint(); }
+        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.detect-lint(); }
         root.update-workspace-layout();
     }
     in-out property <bool> http-open: false;
+    in-out property <bool> captures-open: false;
+    private property <float> captures-progress: root.captures-open ? 1 : 0;
+    in-out property <int> captures-scope: 0;
+    in property <[CaptureRow]> captures-rows;
+    in-out property <image> captures-image;
+    in-out property <bool> capture-preview-open: false;
+    in property <string> captures-title;
+    in property <string> captures-notice;
+    callback refresh-captures(); callback pick-capture(int);
+    changed captures-scope => { if root.captures-open { root.refresh-captures(); } }
+    changed captures-open => {
+        if root.captures-open {
+            root.git-open = false; root.files-open = false; root.logcat-open = false;
+            root.database-open = false; root.docker-open = false; root.lint-open = false;
+            root.terminal-open = false; root.http-open = false;
+            root.refresh-captures();
+        } else { root.captures-image = @image-url("assets/captures.svg"); root.capture-preview-open = false; }
+        root.update-workspace-layout();
+    }
     private property <float> http-progress: root.http-open ? 1 : 0;
     in property <bool> http-busy: false;
     in property <bool> http-ready: false;
@@ -749,7 +774,7 @@ export component AppWindow inherits Window {
     open-http => { root.http-open = true; }
     changed http-open => {
         if root.http-open {
-            root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
+            root.captures-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
             if root.http-loaded-project != root.git-project { root.load-http(); }
         }
         root.update-workspace-layout();
@@ -768,7 +793,7 @@ export component AppWindow inherits Window {
     callback refresh-usage(); callback show-usage(); callback open-usage-report();
     changed usage-scope => { if root.usage-open { root.refresh-usage(); } }
     changed usage-view => { root.show-usage(); }
-    changed usage-selected-chat => { if root.usage-open && root.usage-scope == 1 { root.refresh-usage(); } }
+    changed usage-selected-chat => { if root.usage-open && root.usage-scope == 1 { root.refresh-usage(); } if root.captures-open { root.refresh-captures(); } }
 
     in-out property <bool> terminal-open: false;
     private property <float> terminal-progress: root.terminal-open ? 1 : 0;
@@ -785,7 +810,7 @@ export component AppWindow inherits Window {
     callback start-terminal(); callback close-terminal(); callback refresh-terminal();
     callback terminal-key(string, bool, bool, bool); callback terminal-scroll(int);
     changed terminal-open => {
-        if root.terminal-open { root.http-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
+        if root.terminal-open { root.http-open = false; root.captures-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
         root.refresh-terminal(); root.update-workspace-layout();
     }
     in property <bool> explorer-busy: false;
@@ -815,12 +840,12 @@ export component AppWindow inherits Window {
     callback select-file(string);
     callback explorer-event(string);
     callback open-project-folder();
-    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
+    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
 
     in-out property <bool> logcat-open: false;
     private property <float> logcat-progress: root.logcat-open ? 1 : 0;
     changed logcat-open => {
-        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-logcat-devices(); }
+        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-logcat-devices(); }
         else { root.stop-logcat(); }
         root.update-workspace-layout();
     }
@@ -1190,7 +1215,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         Rectangle {
-                            height: root.compact-composer ? 196px : 156px;
+                            height: (root.compact-composer ? 196px : 156px) + (root.attachment-rows.length > 0 ? 80px : 0px);
                             border-radius: 9px;
                             background: #192534;
                             border-width: 1px;
@@ -1211,29 +1236,50 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
-                                TextEdit { text <=> root.draft; enabled: root.has-chat; font-size: 14px; }
+                                if root.attachment-rows.length > 0 : ScrollView {
+                                    height: 80px; vertical-scrollbar-policy: always-off;
+                                    content-height: 74px; content-width: root.attachment-rows.length * 112px;
+                                    for item[index] in root.attachment-rows : Rectangle {
+                                        x: index * 112px; y: 0px; width: 104px; height: 74px;
+                                        background: #253247; border-radius: 6px;
+                                        Image { x: 4px; y: 4px; width: 96px; height: 48px; source: item.image; image-fit: contain; }
+                                        Text { x: 6px; y: 55px; width: 92px; height: 15px; text: item.name; color: #bcc5d8; font-size: 10px; overflow: elide; }
+                                        Button { x: 80px; y: 0px; width: 24px; height: 24px; text: "×"; accessible-label: "Quitar " + item.name; enabled: !root.chat-running && !root.attachment-busy; clicked => { root.remove-attachment(item.id); } }
+                                    }
+                                }
+                                TextEdit {
+                                    text <=> root.draft; enabled: root.has-chat; font-size: 14px;
+                                    key-pressed(event) => {
+                                        if event.modifiers.control && (event.text == "v" || event.text == "V" || event.text == "\u{0016}") {
+                                            if root.paste-image() { return accept; }
+                                        }
+                                        return reject;
+                                    }
+                                }
                                 Rectangle {
                                     height: root.compact-composer ? 88px : 48px;
                                   if !root.compact-composer : HorizontalBox {
                                     y: 8px; width: parent.width; height: 32px;
                                     padding: 0px;
                                     spacing: 6px;
+                                    IconButton { width: 32px; height: 32px; icon: @image-url("assets/attach.svg"); label: "Adjuntar imágenes"; enabled: root.has-chat && !root.chat-running && !root.attachment-busy && root.attachment-rows.length < 4; clicked => { root.attach-images(); } }
                                     Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
                                     Rectangle { horizontal-stretch: 1; }
                                     ComboBox { model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } width: 95px; height: 32px; }
                                     ComboBox { model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 140px; height: 32px; selected => { root.pick-chat-model(self.current-index); } }
                                     ComboBox { model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 95px; height: 32px; selected => { root.pick-chat-effort(self.current-index); } }
                                     if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
-                                    Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && root.draft != ""; clicked => { root.send-message(root.draft, root.provider-index); } }
+                                    Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0); clicked => { root.send-message(root.draft, root.provider-index); } }
                                   }
                                   if root.compact-composer : VerticalBox {
                                     y: 8px; width: parent.width; height: 72px;
                                     padding: 0px; spacing: 8px;
                                     HorizontalBox {
                                         height: 32px; padding: 0px; spacing: 6px;
+                                        IconButton { width: 32px; height: 32px; icon: @image-url("assets/attach.svg"); label: "Adjuntar imágenes"; enabled: root.has-chat && !root.chat-running && !root.attachment-busy && root.attachment-rows.length < 4; clicked => { root.attach-images(); } }
                                         Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
                                         if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
-                                        Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && root.draft != ""; clicked => { root.send-message(root.draft, root.provider-index); } }
+                                        Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0); clicked => { root.send-message(root.draft, root.provider-index); } }
                                     }
                                     HorizontalBox {
                                         height: 32px; padding: 0px; spacing: 6px;
@@ -1604,6 +1650,40 @@ export component AppWindow inherits Window {
     }
 
     // Resize the panel and workspace together, preserving a usable chat width.
+    if root.captures-open || root.captures-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.captures-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        clip: true; background: #172332; border-radius: 10px; border-width: 1px; border-color: #354460;
+        VerticalBox {
+            padding: 12px; spacing: 8px;
+            HorizontalBox {
+                height: 28px; padding: 0px;
+                Image { source: @image-url("assets/captures.svg"); width: 18px; height: 18px; }
+                Text { text: "Imágenes"; color: #e3e7f3; font-size: 17px; horizontal-stretch: 1; vertical-alignment: center; }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/refresh.svg"); label: "Actualizar imágenes"; clicked => { root.refresh-captures(); } }
+            }
+            ComboBox { height: 32px; model: ["Proyecto", "Chat actual"]; current-index <=> root.captures-scope; }
+            Text { text: root.captures-notice; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 64px; overflow: elide; }
+            ListView {
+                min-height: 80px; vertical-stretch: 1;
+                for capture in root.captures-rows : Rectangle {
+                    height: 52px; background: capture-touch.has-hover ? #253447 : transparent;
+                    VerticalBox {
+                        padding: 6px; spacing: 4px;
+                        Text { text: capture.name; color: #e3e7f3; overflow: elide; }
+                        Text { text: capture.detail; color: #91a0bc; font-size: 11px; overflow: elide; }
+                    }
+                    capture-touch := TouchArea { clicked => { root.pick-capture(capture.index); } }
+                }
+            }
+            if root.captures-title != "" : Text { text: root.captures-title; color: #e3e7f3; overflow: elide; }
+            if root.captures-title != "" : Rectangle {
+                height: 190px; background: #101822; border-radius: 6px;
+                Image { width: parent.width; height: parent.height; source: root.captures-image; image-fit: contain; }
+                TouchArea { clicked => { root.capture-preview-open = true; } }
+            }
+        }
+    }
     if root.http-open || root.http-progress > 0 : Rectangle {
         x: root.width - self.width - 14px + (1 - root.http-progress) * (self.width + 14px);
         y: 58px; width: root.panel-width; height: root.height - 72px;
@@ -1918,7 +1998,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open : Rectangle {
+    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open : Rectangle {
         x: root.width - root.panel-width - 19px; y: 58px;
         width: 10px; height: root.height - 72px;
         Rectangle { x: 4px; y: 12px; width: 2px; height: parent.height - 24px; border-radius: 1px; background: panel-resize.has-hover || root.panel-dragging ? #7970ff : #384561; }
@@ -1926,7 +2006,7 @@ export component AppWindow inherits Window {
             private property <length> start-x;
             private property <length> start-width;
             mouse-cursor: ew-resize;
-            enabled: max(root.http-progress, max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
+            enabled: max(max(root.http-progress, root.captures-progress), max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
             pointer-event(event) => {
                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                     self.start-x = parent.x + self.mouse-x;
@@ -1989,6 +2069,23 @@ export component AppWindow inherits Window {
         }
     }
 
+    if root.captures-open && root.capture-preview-open : Rectangle {
+        width: parent.width; height: parent.height; background: #080d16e8;
+        TouchArea { clicked => { root.capture-preview-open = false; } }
+        Rectangle {
+            x: 40px; y: 40px; width: parent.width - 80px; height: parent.height - 80px;
+            background: #172332; border-radius: 10px;
+            VerticalBox {
+                padding: 12px; spacing: 8px;
+                HorizontalBox {
+                    height: 28px;
+                    Text { text: root.captures-title; color: #e3e7f3; horizontal-stretch: 1; overflow: elide; }
+                    Button { text: "Cerrar"; clicked => { root.capture-preview-open = false; } }
+                }
+                Image { source: root.captures-image; image-fit: contain; horizontal-stretch: 1; vertical-stretch: 1; }
+            }
+        }
+    }
     if root.http-open && root.http-variables-open : Rectangle {
         width: root.width; height: root.height; background: #080d18.with-alpha(0.87);
         TouchArea { }

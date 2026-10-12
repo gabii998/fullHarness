@@ -28,6 +28,8 @@ Aplicación de escritorio en Rust + Slint para trabajar con múltiples repositor
 - [Problemas del linter](docs/linters.md)
 - [Terminal del proyecto](docs/terminal.md)
 - [Peticiones HTTP](docs/http.md)
+- [Imágenes del agente](docs/capturas.md)
+- [Imágenes adjuntas al chat](docs/adjuntos.md)
 
 ### Métricas y almacenamiento
 

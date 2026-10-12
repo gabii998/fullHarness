@@ -14,6 +14,8 @@ use std::{
 };
 
 slint::include_modules!();
+mod attachments_ui;
+mod captures_ui;
 mod docker_ui;
 mod explorer_ui;
 mod git_ui;
@@ -29,6 +31,7 @@ mod terminal_ui;
 mod usage_ui;
 
 fn refresh(ui: &AppWindow, state: &AppState) {
+    attachments_ui::display(ui, state);
     ui.set_codex_configured(
         ui.get_codex_authenticated()
             && state.settings.codex.enabled
@@ -292,7 +295,20 @@ fn refresh(ui: &AppWindow, state: &AppState) {
                 .iter()
                 .enumerate()
                 .map(|(index, m)| {
-                    let body = display_message(m, &chat.wire_history);
+                    let mut body = display_message(m, &chat.wire_history);
+                    if let Some(images) = chat.message_images.get(&index) {
+                        if !body.is_empty() {
+                            body.push_str("\n\n");
+                        }
+                        body.push_str(&format!(
+                            "Imágenes adjuntas: {}",
+                            images
+                                .iter()
+                                .map(|i| i.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
                     let role = if m.role.starts_with("Herramienta") {
                         "Herramienta"
                     } else {
@@ -950,6 +966,8 @@ fn build_app(
     terminal_ui::configure(&ui, supervisor.clone());
     usage_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
     http_ui::configure(&ui, store.clone(), supervisor.clone());
+    captures_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
+    attachments_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
     let logcat = logcat_ui::configure(&ui, supervisor.clone());
     explorer_ui::configure(&ui, supervisor.clone());
     configure_settings_callbacks(&ui, store.clone(), state.clone(), supervisor.clone());
@@ -1267,10 +1285,11 @@ fn build_app(
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        let text = text.trim();
-        if text.is_empty() {
+        if ui.get_attachment_busy() {
+            ui.set_notice("Esperá a que se guarden las imágenes adjuntas.".into());
             return;
         }
+        let text = text.trim();
         let mut state = data.borrow_mut();
         let Some(id) = state.selected_chat else {
             return;
@@ -1282,6 +1301,9 @@ fn build_app(
         let Some(chat) = state.chat_mut(id) else {
             return;
         };
+        if text.is_empty() && chat.draft_images.is_empty() {
+            return;
+        }
         if matches!(
             chat.state,
             RunState::Running | RunState::WaitingForPermission
@@ -1334,7 +1356,16 @@ fn build_app(
         let before = state.chat(id).unwrap().clone();
         let chat = state.chat_mut(id).unwrap();
         if chat.messages.is_empty() {
-            chat.title = text.chars().take(48).collect();
+            chat.title = if text.is_empty() {
+                "Consulta con imágenes".into()
+            } else {
+                text.chars().take(48).collect()
+            };
+        }
+        let images = std::mem::take(&mut chat.draft_images);
+        if !images.is_empty() {
+            chat.message_images
+                .insert(chat.messages.len(), images.clone());
         }
         chat.messages.push(Message {
             role: "Vos".into(),
@@ -1343,7 +1374,7 @@ fn build_app(
         if provider == Provider::Codex && !chat.wire_history.is_empty() {
             ascurra_harness::runtime::repair_history(&mut chat.wire_history);
             chat.wire_history
-                .push(serde_json::json!({"role":"user","content":text}));
+                .push(ascurra_harness::attachments::codex_message(text, &images));
         }
         chat.state = RunState::Running;
         chat.last_status = "Codex conectado directamente · Ejecutando…".into();
@@ -1831,6 +1862,9 @@ fn configure_runtime_callbacks(
         drop(state);
         if finished && ui.get_usage_open() {
             ui.invoke_refresh_usage();
+        }
+        if finished && ui.get_captures_open() {
+            ui.invoke_refresh_captures();
         }
         if let Some(project) = next_queue {
             ui.invoke_advance_task_queue(project.to_string().into());
@@ -2643,7 +2677,7 @@ mod tests {
         .unwrap();
         ui.invoke_open_settings();
         assert!(ui.get_settings_open());
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(160));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(160);
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-settings-preview.png"),
@@ -2735,7 +2769,7 @@ mod tests {
         ui.invoke_select_row(first.to_string().into());
         assert_eq!(ui.get_chat_model_index(), 1);
         assert_eq!(ui.get_chat_effort_index(), 5);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(160));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(160);
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-chat-controls-preview.png"),
@@ -2793,7 +2827,7 @@ mod tests {
         ui.set_quota_status("Datos de prueba · no son el uso de tu cuenta.".into());
         assert_eq!(ui.get_quota_windows().row_count(), 2);
         assert_eq!(ui.get_quota_windows().row_data(0).unwrap().remaining, 75.0);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-quota-preview.png"),
@@ -2832,9 +2866,9 @@ mod tests {
             ui.get_navigation().as_any()
         ));
         assert!(std::ptr::eq(stable_tabs.as_any(), ui.get_tabs().as_any()));
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
         let before = ui.get_chat_scroll_bottom();
         assert!(
@@ -2859,13 +2893,13 @@ mod tests {
             "El streaming debe actualizar filas sin recrear la lista"
         );
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(40));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(40);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(
             ui.get_chat_scroll_offset() > ui.get_chat_scroll_bottom() + 2.0,
             "El desplazamiento debe interpolar antes de llegar al final"
         );
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(ui.get_chat_scroll_bottom() < before);
         assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
@@ -2886,14 +2920,14 @@ mod tests {
         };
         ui.set_git_open(true);
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(110));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(110);
         let during_panel = ui.window().take_snapshot().unwrap();
         assert_eq!(
             static_header(&before_panel) == static_header(&during_panel),
             true,
             "Los botones de la cabecera no se desplazan durante la transición"
         );
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(140));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(140);
         let after_panel = ui.window().take_snapshot().unwrap();
         assert_eq!(
             static_header(&before_panel) == static_header(&after_panel),
@@ -3112,7 +3146,7 @@ mod tests {
             "Resumen del commit\n\nDetalle pendiente"
         );
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(150));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(150);
         let history = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-git-history-preview.png"),
@@ -3126,7 +3160,7 @@ mod tests {
         assert!(ui.get_git_commit_message().contains("Detalle pendiente"));
         assert_eq!(ui.get_draft(), "Borrador pendiente");
         ui.set_files_open(true);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(
             !ui.get_git_open(),
@@ -3196,7 +3230,7 @@ mod tests {
         );
         ui.invoke_explorer_event(serde_json::json!({"root":"otro-proyecto","path":"src/main.rs","kind":"preview","result":{"text":"Contenido de otro proyecto","truncated":false}}).to_string().into());
         assert!(!ui.get_file_preview_text().contains("otro proyecto"));
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-file-content-preview.png"),
@@ -3238,7 +3272,7 @@ mod tests {
                     delta_x: 0.0,
                     delta_y: -320.0,
                 });
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(20);
             let _ = ui.window().take_snapshot().unwrap();
         }
         let after_scroll = ui.window().take_snapshot().unwrap();
@@ -3362,7 +3396,7 @@ mod tests {
         ui.set_codex_authenticated(true); // Render the two-provider pager.
         refresh(&ui, &state.borrow());
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-claude-preview.png"),
@@ -3425,7 +3459,7 @@ mod tests {
         ui.set_logcat_open(true);
         ui.set_logcat_running(true);
         for _ in 0..3 {
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
             let _ = ui.window().take_snapshot().unwrap();
         }
         assert!(!ui.get_git_open() && !ui.get_files_open());
@@ -3455,7 +3489,7 @@ mod tests {
                 .dispatch_event(slint::platform::WindowEvent::PointerMoved {
                     position: slint::LogicalPosition::new(x + delta, 400.0),
                 });
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(30));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(30);
             let _ = ui.window().take_snapshot().unwrap();
             assert!(
                 ((initial_workspace - ui.get_workspace_visible_width())
@@ -3469,7 +3503,7 @@ mod tests {
                     position: slint::LogicalPosition::new(x + delta, 400.0),
                     button: slint::platform::PointerEventButton::Left,
                 });
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(30));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(30);
             let _ = ui.window().take_snapshot().unwrap();
         };
         let original_tab_width = ui.get_tab_visible_width();
@@ -3516,14 +3550,14 @@ mod tests {
         ui.on_refresh_git(|| {});
         ui.on_refresh_explorer(|_| {});
         ui.set_git_open(true);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         assert!(!ui.get_logcat_open() && !ui.get_logcat_running());
         assert_eq!(
             ui.get_side_panel_visible_width(),
             ui.get_side_panel_max_width()
         );
         ui.set_files_open(true);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         assert!(!ui.get_git_open());
         assert_eq!(
             ui.get_side_panel_visible_width(),
@@ -3531,7 +3565,7 @@ mod tests {
         );
         ui.set_side_panel_width(310.0);
         ui.set_files_open(false);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
 
         let _ = ui.window().take_snapshot().unwrap();
         let before_projects_resize = ui.get_workspace_visible_width();
@@ -3572,7 +3606,7 @@ mod tests {
         assert!(ui.get_files_open() && !ui.get_git_open());
         assert_eq!(ui.get_active_panel_index(), 2);
         ui.invoke_select_panel(0);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(!ui.get_files_open() && !ui.get_git_open());
         assert_eq!(ui.get_active_panel_index(), 0);
@@ -3613,7 +3647,7 @@ mod tests {
             "El menú con iconos debe abrir el panel seleccionado"
         );
         ui.invoke_select_panel(0);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         let _ = ui.window().take_snapshot().unwrap();
 
         // A long transcript retains exact row heights, but only realizes text
@@ -3637,7 +3671,7 @@ mod tests {
         }).collect::<Vec<_>>())));
         for _ in 0..4 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
@@ -3647,7 +3681,7 @@ mod tests {
             });
         for _ in 0..4 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let active = || mounted.borrow().values().filter(|active| **active).count();
         assert!(
@@ -3672,7 +3706,7 @@ mod tests {
             });
         for _ in 0..4 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let shifted = mounted
             .borrow()
@@ -3703,7 +3737,7 @@ mod tests {
         ui.window().set_size(slint::PhysicalSize::new(900, 820));
         for _ in 0..4 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         assert!(
             active() > 0 && active() < 25,
@@ -3718,7 +3752,7 @@ mod tests {
         }])));
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let preview = ui.window().take_snapshot().unwrap();
         image::save_buffer(
@@ -3912,7 +3946,7 @@ mod tests {
         );
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
@@ -3957,7 +3991,7 @@ mod tests {
         assert!(!ui.get_database_open() && !ui.get_git_open());
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
@@ -4021,7 +4055,7 @@ mod tests {
         ui.set_lint_filter("".into());
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
@@ -4046,7 +4080,7 @@ mod tests {
         std::fs::write(temp.path().join("diagnostic-fixture.txt"), &text).unwrap();
         ui.set_git_project(root.clone().into());
         let _ = ui.window().take_snapshot().unwrap();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         ui.set_file_tabs(ModelRc::new(VecModel::from(vec![FileTabRow {
             project: root.into(),
             path: "diagnostic-fixture.txt".into(),
@@ -4057,7 +4091,7 @@ mod tests {
         ui.invoke_open_problem_file("diagnostic-fixture.txt".into(), 120);
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         assert!(ui.get_file_preview_open());
         assert_eq!(ui.get_file_target_line(), 120);
@@ -4079,7 +4113,7 @@ mod tests {
         }])));
         for _ in 0..3 {
             let _ = ui.window().take_snapshot().unwrap();
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(100));
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
         }
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(
@@ -4092,7 +4126,7 @@ mod tests {
         .unwrap();
         assert!(!ui.get_lint_open());
         ui.set_terminal_open(false);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
         let _ = ui.window().take_snapshot().unwrap();
         let workspace_before_usage = ui.get_workspace_visible_width();
         ui.on_refresh_usage(|| {});
@@ -4173,7 +4207,7 @@ mod tests {
         ui.on_load_http(|| {});
         let workspace_before_http = ui.get_workspace_visible_width();
         ui.invoke_open_http();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(220));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(220);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(ui.get_http_open());
         assert_eq!(ui.get_active_panel_index(), 8);
@@ -4184,7 +4218,7 @@ mod tests {
             "Seleccionar un chat conserva el panel HTTP"
         );
         ui.set_http_open(false);
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(220));
+        i_slint_backend_testing::testing_backend::mock_elapsed_time(220);
         ui.set_approval_description("Directorio: proyecto\nPrograma: python\nTimeout: 30 s\nArgumentos: 2\n\nArgumento 1 (2 bytes):\n-c\n\nArgumento 2:\n# Actualizar documentación\nsave('README.md', 'Índice del proyecto')\nsave('docs/metrics.md', 'Métricas y almacenamiento')\nprint('texto \\n literal')".into());
         let snapshot = ui.window().take_snapshot().unwrap();
         image::save_buffer(

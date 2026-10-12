@@ -27,6 +27,12 @@ pub fn schemas() -> Value {
             vec!["path"],
         ),
         (
+            "register_image",
+            "Register a PNG or JPEG image from the repository in the current chat gallery. The image stays on disk; returns status/ref only. Maximum 16 MiB and 16 megapixels.",
+            json!({"path":{"type":"string"}}),
+            vec!["path"],
+        ),
+        (
             "read_file",
             "Explicit bounded UTF-8 file inspection. Maximum 8192 bytes; offset is in bytes.",
             json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":8192}}),
@@ -67,6 +73,9 @@ pub fn schemas() -> Value {
 }
 
 impl Tools {
+    pub fn data_root(&self) -> &Path {
+        &self.private
+    }
     pub fn new(root: &Path, data: &Path, chat: u64) -> Result<Self, String> {
         let root = root
             .canonicalize()
@@ -240,6 +249,18 @@ impl Tools {
             "inspect_result" => self.inspect(arguments).map(|v| v.to_string()),
             "write_file" => self.write(arguments),
             "run_command" => self.run(arguments, cancel).await,
+            "register_image" | "register_capture" => {
+                let path = self.path(field(arguments, "path").unwrap_or(""), false);
+                path.and_then(|path| {
+                    let reference = uuid::Uuid::new_v4().simple().to_string();
+                    let directory = self.artifacts.join(&reference);
+                    let capture = crate::captures::import(&path, &directory)?;
+                    fs::write(directory.join("metadata.json"), serde_json::to_vec(&json!({
+                        "tool":"register_image", "file":capture.file_name().and_then(|s|s.to_str())
+                    })).unwrap()).map_err(|_| "No se pudieron guardar los metadatos de la captura.")?;
+                    Ok(json!({"ok":true,"ref":reference}).to_string())
+                })
+            }
             _ => Err("Herramienta desconocida.".into()),
         };
         result.unwrap_or_else(|error| self.failure(name, &error))
@@ -361,6 +382,8 @@ impl Tools {
             .kill_on_drop(true);
         // No inherited credential environment. Basic OS/toolchain environment only.
         command.env_clear();
+        // Approved capture scripts can write images directly to this chat artifact.
+        command.env("HARNESS_ARTIFACT_DIR", &directory);
         for key in [
             "PATH",
             "SystemRoot",
@@ -580,6 +603,37 @@ async fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn capture_tool_retains_images_outside_context_and_rejects_repository_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let data = temp.path().join("data");
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(&data).unwrap();
+        image::RgbaImage::from_pixel(20, 10, image::Rgba([10, 20, 30, 255]))
+            .save(repo.join("screen.png"))
+            .unwrap();
+        let tools = Tools::new(&repo, &data, 7).unwrap();
+        let (_, cancel) = watch::channel(false);
+        let reply = tools
+            .execute(
+                "register_image",
+                &json!({"path":"screen.png"}),
+                cancel.clone(),
+            )
+            .await;
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply.as_object().unwrap().len(), 2);
+        let (items, partial) = crate::captures::list(&data, &[7]);
+        assert!(!partial);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].path.starts_with(data.join("artifacts/7")));
+        let escape = tools
+            .execute("register_image", &json!({"path":"../screen.png"}), cancel)
+            .await;
+        assert_eq!(serde_json::from_str::<Value>(&escape).unwrap()["ok"], false);
+    }
     #[test]
     fn command_approval_displays_decoded_arguments_without_changing_script_literals() {
         let temp = tempfile::tempdir().unwrap();

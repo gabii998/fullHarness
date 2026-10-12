@@ -87,6 +87,16 @@ fn native_adapter_approvals_resume_isolation_usage_and_cancellation() {
             role: "Vos".into(),
             text: prompt.into(),
         });
+        if prompt == "write" {
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::from_pixel(8, 6, image::Rgba([1, 2, 3, 255]))
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            let image = ascurra_harness::attachments::save(&data, id, "fixture.png", png.get_ref())
+                .unwrap();
+            chat.message_images
+                .insert(chat.messages.len() - 1, vec![image]);
+        }
         let (sender, receive) = std::sync::mpsc::channel();
         supervisor
             .start_claude(

@@ -33,6 +33,13 @@ fn main() {
     let session = if args.iter().any(|a| a == "--resume") { arg("--resume") } else { arg("--session-id") };
     let mut input = String::new(); std::io::stdin().read_to_string(&mut input).unwrap();
     assert!(input.contains(session));
+    if input.contains("write") {
+        assert!(input.contains(r#""type":"image""#));
+        assert!(input.contains(r#""media_type":"image/png""#));
+        assert!(input.contains(r#""type":"base64""#));
+        assert!(input.contains("iVBORw0KGgo"));
+        assert!(!input.contains("harness-image:"));
+    }
     let config = arg("--mcp-config");
     let host = config.split("http://").nth(1).unwrap().split('/').next().unwrap();
     assert!(rpc(host, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#).contains("protocolVersion"));

@@ -22,9 +22,10 @@ uuid = { version = "1", features = ["v4"] }
 webbrowser = "1"
 fs2 = "0.4"
 time = { version = "0.3", features = ["parsing"] }
-arboard = { version = "3.6", default-features = false }
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 portable-pty = "0.9"
 vt100 = "0.16"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_JobObjects", "Win32_System_Threading"] }
@@ -34,7 +35,6 @@ slint-build = "=1.18.1"
 
 [dev-dependencies]
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Windows software rendering must present cached pixels on native expose events.
 [patch.crates-io]

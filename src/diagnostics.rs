@@ -94,6 +94,22 @@ pub fn payload_metrics(arguments: &Value, reply: &str) -> Value {
         "estimated_reply_tokens":reply_chars.div_ceil(4),"method":"characters_divided_by_4",
         "result_reference":serde_json::from_str::<Value>(reply).ok().and_then(|v|v["ref"].as_str().map(short))})
 }
+/// Count serialized payload bytes without allocating a second base64 image payload.
+pub fn json_size(value: &Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Counter(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
 pub fn argument_metrics(name: &str, arguments: &Value) -> Value {
     match name {
         "http_request" | "http_collections" => {
@@ -191,6 +207,7 @@ pub fn tool_summary(
         "inspect_result" => "Consultar resultado",
         "http_collections" => "Colecciones HTTP",
         "http_request" => "Request HTTP",
+        "register_image" | "register_capture" => "Guardar imagen",
         _ => "Herramienta",
     };
     format!(

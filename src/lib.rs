@@ -1,3 +1,5 @@
+pub mod attachments;
+pub mod captures;
 pub mod claude;
 pub mod codex;
 pub mod diagnostics;

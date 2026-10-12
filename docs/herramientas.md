@@ -13,6 +13,7 @@ Herramientas registradas en el espacio `harness`:
 | `write_file` | Escritura de hasta 64 KiB, con revisión y aprobación. |
 | `run_command` | Programa y argumentos, con aprobación; hasta 120 segundos. |
 | `inspect_result` | Consulta explícita de un resultado guardado, hasta 8 KiB. |
+| `register_image` | Copia una imagen PNG/JPEG del repositorio a la galería del chat; devuelve solo estado y referencia. |
 
 Las acciones devuelven solo estado y referencia. stdout, stderr y metadatos quedan en archivos de `artifacts/<chat>/<referencia>/`; cada flujo de comando conserva hasta 1 MiB y registra si fue truncado. Guardar un archivo no lo adjunta al contexto. Solo una consulta explícita incorpora fragmentos de su contenido.
 

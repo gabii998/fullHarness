@@ -251,11 +251,11 @@ pub(crate) async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let system_prompt = format!(
-        "You are a programming agent working on the current repository. Use only the harness MCP tools. Tool outputs are intentionally bounded; inspect a result artifact only when needed. Prefer targeted reads; more=true means data is available, not that it must all be read. For structural changes to large documents, obtain a small heading outline and use an approved local script to move existing sections without copying the entire document through model context. Read section contents only when needed to make semantic edits. File changes, command execution and HTTP requests require approval in the harness UI. Answer the user in their language.{}",
+        "You are a programming agent working on the current repository. Use only the harness MCP tools. Tool outputs are intentionally bounded; inspect a result artifact only when needed. For image outputs (screenshots, diagrams, charts, illustrations or other images), save PNG/JPEG files directly in the HARNESS_ARTIFACT_DIR environment directory provided to approved commands, or use register_image to copy a repository image into the chat gallery. Generated image artifacts stay out of model context. User-attached images are included in the user message. Prefer targeted reads; more=true means data is available, not that it must all be read. For structural changes to large documents, obtain a small heading outline and use an approved local script to move existing sections without copying the entire document through model context. Read section contents only when needed to make semantic edits. File changes, command execution and HTTP requests require approval in the harness UI. Answer the user in their language.{}",
         chat.project_context
     );
     command.args(["--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--strict-mcp-config", "--mcp-config", &mcp,
-        "--allowedTools", "mcp__harness__list_files,mcp__harness__read_file,mcp__harness__write_file,mcp__harness__run_command,mcp__harness__inspect_result,mcp__harness__http_collections,mcp__harness__http_request",
+        "--allowedTools", "mcp__harness__list_files,mcp__harness__read_file,mcp__harness__write_file,mcp__harness__run_command,mcp__harness__inspect_result,mcp__harness__http_collections,mcp__harness__http_request,mcp__harness__register_image",
         "--system-prompt", &system_prompt,
         "--max-turns", "32"]);
     command.args([
@@ -303,9 +303,18 @@ pub(crate) async fn run(
     let _drain = Drain(stderr_task);
     let mut stdin = child.stdin.take().ok_or("Claude no abrió stdin.")?;
     let prompt = chat.messages.last().ok_or("Mensaje vacío.")?.text.clone();
+    let content = crate::attachments::claude_content(
+        &prompt,
+        chat.message_images
+            .get(&(chat.messages.len() - 1))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        tools.data_root(),
+        chat.id,
+    )?;
     let input = format!(
         "{}\n",
-        json!({"type":"user","message":{"role":"user","content":prompt},"parent_tool_use_id":null,"session_id":session})
+        json!({"type":"user","message":{"role":"user","content":content},"parent_tool_use_id":null,"session_id":session})
     );
     stdin
         .write_all(input.as_bytes())

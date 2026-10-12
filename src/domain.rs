@@ -73,6 +73,10 @@ pub struct Chat {
     #[serde(default)]
     pub draft: String,
     #[serde(default)]
+    pub draft_images: Vec<crate::attachments::Attachment>,
+    #[serde(default)]
+    pub message_images: std::collections::BTreeMap<usize, Vec<crate::attachments::Attachment>>,
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
@@ -194,6 +198,8 @@ impl AppState {
                             history_loaded: false,
                             usage: chat.usage.clone(),
                             draft: chat.draft.clone(),
+                            draft_images: chat.draft_images.clone(),
+                            message_images: chat.message_images.clone(),
                             model: chat.model.clone(),
                             reasoning_effort: chat.reasoning_effort.clone(),
                             usage_incomplete: chat.usage_incomplete,
@@ -324,6 +330,8 @@ impl AppState {
             history_loaded: true,
             usage: Vec::new(),
             draft: String::new(),
+            draft_images: Vec::new(),
+            message_images: Default::default(),
             model: String::new(),
             reasoning_effort: None,
             wire_history: Vec::new(),
