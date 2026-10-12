@@ -1,0 +1,13 @@
+# Proyectos, configuración y tareas
+
+[← Volver al índice](../README.md)
+
+Seleccionar un proyecto abre una pestaña de resumen que se reutiliza: muestra la carpeta, la cantidad de chats, las sesiones en curso y la lista de conversaciones con agente y estado. Permite crear chats y acceder a Git o archivos sin abrir un chat. Las pestañas de proyecto y su selección se guardan, y su navegación o cierre no detiene sesiones ni pierde borradores.
+
+La pestaña de cada proyecto incluye una vista Tareas con columnas Por hacer, En progreso y Realizadas. Cada tarea requiere título, objetivo, criterio de aceptación y severidad (Baja, Media, Alta o Crítica). Se puede crear, editar y cambiar de columna desde el formulario de edición; los datos se guardan localmente por proyecto sin cargar conversaciones en el tablero.
+
+La vista Configuración del proyecto permite guardar una descripción breve, varios comandos de compilación con el caso en que se usan, el comando de tests y reglas propias. Las reglas de Codex y Claude se importan al mismo campo editable de Reglas básicas: si está vacío al abrir la configuración, se cargan ambos; los botones Cargar Codex, Cargar Claude y Ambos agregan el contenido de los archivos conservando el texto existente y evitando duplicados. Guardar publica esa copia editada como las reglas comunes del proyecto. `AGENTS.override.md` tiene prioridad sobre `AGENTS.md`; para Claude se leen `CLAUDE.md`, `.claude/CLAUDE.md` y `CLAUDE.local.md` cuando existen. No modifica los archivos de origen ni lee reglas globales de la cuenta. Cada archivo admite hasta 8 KB de UTF-8 y el campo combinado hasta 24 KB; los errores no dejan importaciones parciales.
+
+Los chats y la cola reciben la configuración guardada y el contenido del campo Reglas básicas al iniciar cada ejecución. Los archivos de origen no se añaden por separado al contexto. Los comandos son información para el agente y conservan las aprobaciones habituales. La configuración no se repite en el historial de mensajes; una ejecución en curso mantiene su contexto. La descripción también aparece en Resumen.
+
+La cola de tareas ejecuta secuencialmente las tareas Por hacer, en el orden del tablero, con el proveedor seleccionado y su configuración actual. Crea un chat por ejecución y avanza solo cuando el agente finaliza correctamente. Se puede pausar sin cancelar la tarea actual; los errores y reinicios pausan la cola, y continuar requiere una acción explícita. Cada tarea conserva sus ejecuciones y los reportes de tokens, incluidos reintentos, con deduplicación por request: las cifras desconocidas no se estiman ni se reemplazan por cero. Los tokens de caché se muestran por separado y no se suman dos veces. Las aprobaciones mantienen el flujo normal del chat.

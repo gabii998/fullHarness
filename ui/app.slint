@@ -1,0 +1,2153 @@
+import { VerticalBox, HorizontalBox, ScrollView, ListView, LineEdit, TextEdit, ComboBox, Button, CheckBox, SpinBox } from "std-widgets.slint";
+
+export struct HttpRequestRow { id: string, title: string, method: string, selected: bool }
+export struct UsageRow { title: string, metric: string, detail: string, hint: string, ratio: float }
+export struct NavigationRow { id: string, title: string, project: bool, selected: bool, status: string }
+export struct TaskRow { id: string, title: string, objective: string, acceptance: string, severity: int, status: int, tokens: string, chat: string, running: bool }
+export struct ProjectChatRow { id: string, title: string, detail: string, status: string, running: bool }
+export struct BuildCommandRow { command: string, purpose: string }
+export struct TabRow { id: string, title: string, selected: bool }
+export struct MarkdownCell { rendered: styled-text, alignment: int }
+export struct MarkdownRow { header: bool, cells: [MarkdownCell] }
+export struct MarkdownBlock { rendered: styled-text, rows: [MarkdownRow] }
+export struct MessageRow { role: string, body: string, blocks: [MarkdownBlock] }
+export struct QuotaRow { caption: string, remaining: float }
+export struct GitRow { path: string, target: string, status: string, staged: bool, unstaged: bool, header: bool, prepared: bool, name: string, directory: string, code: string, added: string, removed: string, stats: string }
+export struct GitCommitRow { id: string, title: string, detail: string }
+export struct LogcatRow { text: string, level: string }
+export struct TerminalRun { text: string, column: int, columns: int, fg: color, bg: color, bold: bool }
+export struct TerminalRow { runs: [TerminalRun] }
+export struct ProblemRow { path: string, line: int, column: int, error: bool, code: string, message: string }
+export struct DockerRow { id: string, name: string, detail: string, status: string, running: bool, paused: bool }
+export struct DatabaseField { name: string, kind: string, tags: string, key: bool }
+export struct DatabaseEntity { name: string, detail: string, x: float, y: float, height: float, fields: [DatabaseField] }
+export struct DatabaseRelation { x1: float, y1: float, mid: float, x2: float, y2: float, label: string, detail: string }
+
+export struct PreviewLine { text: string, kind: int }
+export struct FileRow { path: string, name: string, directory: bool, expanded: bool, depth: int }
+export struct FileTabRow { project: string, path: string, title: string, text: string, status: string }
+
+component FileViewer inherits Rectangle {
+    vertical-stretch: 1;
+    min-height: 0px;
+    in property <[PreviewLine]> lines;
+    in property <int> columns;
+    in property <int> target-line: 0;
+    callback locate();
+    locate => { file-scroll.content-y = min(0px, max(file-scroll.visible-height - file-scroll.content-height, -(max(0, root.target-line - 3)) * 20px)); }
+    changed target-line => { root.locate(); }
+    changed lines => { file-scroll.content-y = 0px; file-scroll.content-x = 0px; root.locate(); }
+    background: #1c2836; border-radius: 4px;
+    file-scroll := ListView {
+        x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+        content-width: max(self.visible-width, 60px + root.columns * 7.5px);
+        changed content-height => { if root.target-line > 0 { root.locate(); } }
+        animate content-y { duration: 90ms; easing: ease-out; }
+        for line[index] in root.lines : Rectangle {
+            height: 20px; width: file-scroll.content-width;
+            background: root.target-line == index + 1 ? #36334e : line.kind == 1 ? #203c31 : line.kind == 2 ? #442b34 : line.kind == 3 ? #2b2b48 : transparent;
+            Text { x: 0px; width: 44px; height: 20px; text: index + 1; color: #8291ad; font-family: "Consolas"; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
+            TextInput { x: 54px; width: parent.width - 54px; height: 20px; text: line.text; color: line.kind == 1 ? #9cddb3 : line.kind == 2 ? #f1aaaa : line.kind == 3 ? #bbb2ff : #e3e7f3; font-family: "Consolas"; font-size: 12px; read-only: true; wrap: no-wrap; vertical-alignment: center; }
+        }
+    }
+}
+
+component TaskColumn inherits Rectangle {
+    in property <string> title;
+    in property <color> accent;
+    in property <[TaskRow]> tasks;
+    callback edit(string);
+    callback open-chat(string);
+    background: #121d29; border-radius: 8px; border-width: 1px; border-color: #2b384e;
+    VerticalBox {
+        padding: 10px; spacing: 10px;
+        HorizontalBox {
+            padding: 0px; spacing: 6px; height: 24px;
+            Rectangle { width: 6px; height: 6px; background: root.accent; border-radius: 3px; }
+            Text { text: root.title; color: #e3e7f3; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+            Text { text: root.tasks.length; color: #8291ad; font-size: 12px; vertical-alignment: center; }
+        }
+        if root.tasks.length == 0 : Text { text: "Sin tareas"; color: #8291ad; font-size: 12px; height: 28px; }
+        ListView {
+            horizontal-scrollbar-policy: always-off;
+            for task in root.tasks : Rectangle {
+                height: 254px;
+                Rectangle {
+                    height: parent.height - 6px; width: parent.width;
+                    background: #1b2737; border-radius: 7px; border-width: 1px; border-color: #34435c;
+                    VerticalBox {
+                        padding: 10px; spacing: 6px;
+                        HorizontalBox {
+                            padding: 0px; spacing: 8px; height: 36px;
+                            Text { text: task.title; color: #eee8ff; font-size: 13px; font-weight: 600; wrap: word-wrap; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                            Rectangle {
+                                private property <color> severity-color: task.severity == 3 ? #ed9696 : task.severity == 2 ? #dcb27c : task.severity == 1 ? #b7afff : #78c99b;
+                                width: 52px; height: 22px; border-radius: 5px;
+                                background: self.severity-color.with-alpha(0.12); border-width: 1px; border-color: self.severity-color.with-alpha(0.35);
+                                Text { text: ["Baja", "Media", "Alta", "Crítica"][task.severity]; color: parent.severity-color; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                        Text { text: "Objetivo"; color: #8291ad; font-size: 10px; height: 14px; }
+                        Text { text: task.objective; color: #c8cde0; font-size: 11px; wrap: word-wrap; overflow: elide; height: 28px; }
+                        Text { text: "Criterio de aceptación"; color: #8291ad; font-size: 10px; height: 14px; }
+                        Text { text: task.acceptance; color: #c8cde0; font-size: 11px; wrap: word-wrap; overflow: elide; height: 28px; }
+                        Text { text: task.tokens; color: #91a0bc; font-size: 10px; height: 18px; overflow: elide; }
+                        HorizontalBox {
+                            padding: 0px; spacing: 6px; height: 32px;
+                            Rectangle { horizontal-stretch: 1; }
+                            if task.chat != "" : Button { text: "Chat"; icon: @image-url("assets/chat.svg"); width: 68px; clicked => { root.open-chat(task.chat); } }
+                            Button { text: "Editar"; width: 58px; enabled: !task.running; clicked => { root.edit(task.id); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback clicked();
+    width: 28px; height: 28px;
+    Button {
+        width: parent.width; height: parent.height;
+        enabled: root.enabled;
+        accessible-label: root.label;
+        clicked => { root.clicked(); }
+    }
+    Image {
+        source: root.icon;
+        width: 16px; height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.enabled ? 1 : 0.4;
+    }
+}
+
+component GitSelectionCheckbox inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled();
+    width: 24px; height: 24px;
+    forward-focus: checkbox-focus;
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
+    Rectangle {
+        x: 3px; y: 3px; width: 18px; height: 18px; border-radius: 3px;
+        border-width: 1px; border-color: root.checked || checkbox-touch.has-hover ? #9182ff : #59667d;
+        background: root.checked ? #6557ce : checkbox-touch.has-hover ? #29374b : #192534;
+        opacity: root.enabled ? 1 : 0.5;
+        if root.checked : Image { x: 2px; y: 2px; width: 14px; height: 14px; source: @image-url("assets/check.svg"); }
+    }
+    checkbox-touch := TouchArea { enabled: root.enabled; clicked => { checkbox-focus.focus(); root.toggled(); } }
+    checkbox-focus := FocusScope {
+        x: 0px; width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; }
+            return reject;
+        }
+    }
+    if checkbox-focus.has-focus && root.enabled : Rectangle { border-width: 1px; border-color: #9182ff; border-radius: 4px; }
+}
+
+component ChatMessage inherits Rectangle {
+    in property <MessageRow> message;
+    private property <bool> from-user: message.role == "Vos";
+    private property <bool> tool: message.role.starts-with("Herramienta");
+    private property <bool> structured: message.blocks.length > 1 || (message.blocks.length == 1 && message.blocks[0].rows.length > 0);
+    in property <bool> in-viewport: true;
+    private property <length> measured-height: 0px;
+    private property <bool> measure-needed: true;
+    private property <bool> bubble-active: root.in-viewport || root.measure-needed;
+    callback visibility-changed(bool);
+    callback measure-requested();
+    in property <int> measurement-epoch;
+    init => {
+        root.visibility-changed(root.bubble-active);
+        if root.structured { root.measure-requested(); }
+    }
+    changed measure-needed => { if root.measure-needed && root.structured { root.measure-requested(); } }
+    changed measurement-epoch => { if root.structured { root.measure-needed = false; } }
+    changed bubble-active => { root.visibility-changed(root.bubble-active); }
+    in property <bool> defer-measurement: false;
+    private property <bool> width-dirty: false;
+    changed width => {
+        if root.defer-measurement { root.width-dirty = true; }
+        else { root.measure-needed = true; }
+    }
+    changed defer-measurement => {
+        if !root.defer-measurement && root.width-dirty { root.measure-needed = true; root.width-dirty = false; }
+    }
+    changed message => { root.measure-needed = true; }
+    height: root.measured-height > 0px ? root.measured-height : 80px;
+    vertical-stretch: 0;
+    if root.bubble-active : Rectangle {
+        width: min(parent.width, root.from-user ? 640px : 780px);
+        x: root.from-user ? parent.width - self.width : 0px;
+        height: 38px + (root.structured ? rich-body.height : body.height) + 14px;
+        init => { root.measured-height = self.height; if !root.structured { root.measure-needed = false; } }
+        changed height => { root.measured-height = self.height; if !root.structured { root.measure-needed = false; } }
+        background: root.from-user ? #292d50 : root.tool ? #15212c : #1c2836;
+        border-radius: 10px;
+        border-width: root.tool ? 1px : 0px;
+        border-color: #2b3a4a;
+        Text {
+            x: 14px; y: 12px; width: parent.width - 28px; height: 18px;
+            text: root.message.role;
+            color: root.from-user ? #b7afff : root.tool ? #93a6ba : #9992ff;
+            font-size: 12px; font-weight: 600; overflow: elide;
+        }
+        body := StyledText {
+            x: 14px; y: 38px; width: parent.width - 28px;
+            height: root.structured ? 0px : self.preferred-height;
+            visible: !root.structured;
+            text: root.message.blocks[0].rendered;
+            default-color: root.tool ? #99aabd : #e3e7f3;
+            default-font-size: root.tool ? 12px : 14px;
+            link-color: #b4adff;
+        }
+        rich-body := VerticalLayout {
+            x: 14px; y: 38px; width: parent.width - 28px;
+            height: self.preferred-height;
+            spacing: 12px;
+            for block in (root.structured ? root.message.blocks : []) : VerticalLayout {
+                width: parent.width;
+                height: self.preferred-height;
+                spacing: 0px;
+                if block.rows.length == 0 : StyledText {
+                    width: parent.width;
+                    height: self.preferred-height;
+                    text: block.rendered;
+                    default-color: root.tool ? #99aabd : #e3e7f3;
+                    default-font-size: root.tool ? 12px : 14px;
+                    link-color: #b4adff;
+                }
+                for row[index] in block.rows : HorizontalLayout {
+                    width: parent.width;
+                    height: self.preferred-height;
+                    spacing: 0px;
+                    for cell in row.cells : Rectangle {
+                        width: parent.width / row.cells.length;
+                        horizontal-stretch: 1;
+                        min-height: cell-text.preferred-height + 16px;
+                        background: row.header ? #293548 : mod(index, 2) == 0 ? #192532 : #202c3b;
+                        border-width: 1px; border-color: #354254;
+                        cell-text := StyledText {
+                            x: 8px; y: 8px; width: parent.width - 16px;
+                            height: self.preferred-height;
+                            text: cell.rendered;
+                            horizontal-alignment: cell.alignment == 1 ? center : cell.alignment == 2 ? right : left;
+                            default-color: #e3e7f3; default-font-size: 13px; link-color: #b4adff;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component AgentConfig inherits Rectangle {
+    in property <string> name;
+    in property <bool> direct: false;
+    in property <bool> pending: false;
+    in property <bool> connected: false;
+    in property <[string]> models;
+    in-out property <int> model-index: 0;
+    in-out property <bool> enabled;
+    in-out property <string> executable;
+    in-out property <string> model;
+    in-out property <int> concurrency: 1;
+    in-out property <int> effort-index: 0;
+    in property <string> status;
+    in property <bool> busy;
+    callback detect();
+    callback browse();
+    callback check();
+    callback login();
+    callback path-edited();
+    callback pick-model(int);
+    callback disconnect();
+    background: #1e2a39;
+    border-radius: 9px;
+    VerticalBox {
+        padding: 16px;
+        spacing: 8px;
+        HorizontalBox {
+            padding: 0px;
+            Text { text: root.name; color: #e3e7f3; font-size: 19px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            if !root.pending : CheckBox { text: "Habilitado"; checked <=> root.enabled; enabled: !root.busy; }
+        }
+        if !root.direct && !root.pending : HorizontalBox {
+            padding: 0px;
+            spacing: 8px;
+            LineEdit { text <=> root.executable; placeholder-text: "Ruta del cliente oficial"; enabled: !root.busy; horizontal-stretch: 1; edited => { root.path-edited(); } }
+            Button { text: "Detectar"; enabled: !root.busy; clicked => { root.detect(); } }
+            Button { text: "Buscar…"; enabled: !root.busy; clicked => { root.browse(); } }
+        }
+        if root.direct : Text { text: "Conexión directa con tu plan ChatGPT · Sin instalar Codex"; color: #a6b4cb; wrap: word-wrap; font-size: 12px; }
+        if root.direct && root.models.length > 0 : ComboBox { model: root.models; current-index <=> root.model-index; enabled: !root.busy; selected => { root.pick-model(self.current-index); } }
+        if !root.pending : HorizontalBox {
+            padding: 0px;
+            spacing: 8px;
+            LineEdit { text <=> root.model; placeholder-text: root.direct ? "Modelo: elegí uno del catálogo de tu cuenta" : "Modelo: predeterminado del cliente"; enabled: !root.busy; horizontal-stretch: 1; }
+            Text { text: "Concurrencia"; color: #a6b4cb; }
+            SpinBox { value <=> root.concurrency; minimum: 1; maximum: 4; enabled: !root.busy; width: 90px; }
+        }
+        Text { text: root.status; color: #a6b4cb; wrap: word-wrap; font-size: 12px; }
+        if !root.pending : HorizontalBox {
+            padding: 0px;
+            spacing: 8px;
+            Button { text: root.direct ? "Actualizar modelos" : "Verificar cliente"; enabled: !root.busy && (root.direct || root.executable != ""); clicked => { root.check(); } }
+            Button { text: root.direct ? (root.connected ? "Volver a autorizar" : "Continue with ChatGPT") : "Iniciar sesión"; enabled: !root.busy && (root.direct || root.executable != ""); clicked => { root.login(); } }
+            if root.direct : Button { text: "Desconectar"; enabled: !root.busy; clicked => { root.disconnect(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Modalidad: suscripción"; color: #9591ff; font-size: 12px; }
+        }
+    }
+}
+
+component PanelSelect inherits Rectangle {
+    in property <int> active-index;
+    in property <bool> enabled: true;
+    callback selected(int);
+    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP"];
+    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg")];
+    Button {
+        width: parent.width; height: parent.height;
+        enabled: root.enabled; accessible-label: "Panel lateral: " + root.labels[root.active-index];
+        clicked => { options.show(); }
+    }
+    Image { x: 12px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; source: root.icons[root.active-index]; opacity: root.enabled ? 1 : 0.4; }
+    Text { x: 36px; width: parent.width - 66px; height: parent.height; text: root.labels[root.active-index]; color: root.enabled ? #e3e7f3 : #68738b; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
+    Image { x: parent.width - 22px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("assets/chevron-down.svg"); opacity: root.enabled ? 1 : 0.4; }
+    options := PopupWindow {
+        x: 0px; y: root.height + 4px; width: root.width; height: 9 * 36px + 16px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: #192534; border-radius: 8px; border-width: 1px; border-color: #384561;
+            VerticalBox {
+                padding: 8px; spacing: 4px;
+                for label[index] in root.labels : Rectangle {
+                    height: 32px;
+                    Button {
+                        width: parent.width; height: parent.height;
+                        accessible-label: label + (index == root.active-index ? ", seleccionado" : "");
+                        clicked => { root.selected(index); options.close(); }
+                    }
+                    Image { x: 10px; y: 8px; width: 16px; height: 16px; source: root.icons[index]; }
+                    Text { x: 34px; width: parent.width - 44px; height: parent.height; text: label; color: #e3e7f3; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
+                }
+            }
+        }
+    }
+}
+
+component SidebarItem inherits Rectangle {
+    in property <NavigationRow> item;
+    in property <bool> compact: false;
+    callback clicked();
+    callback hovered(string, length);
+    accessible-role: button;
+    accessible-label: item.title;
+    accessible-action-default => { root.clicked(); }
+    height: item.project ? 42px : 36px;
+    border-radius: 7px;
+    background: item.selected ? #30316b : touch.has-hover ? #1e2a3b : transparent;
+    animate background { duration: 120ms; easing: ease-out; }
+    if !root.compact : HorizontalBox {
+        padding-left: item.project ? 12px : 28px;
+        padding-right: 12px;
+        Image { source: item.project ? @image-url("assets/folder.svg") : @image-url("assets/chat.svg"); width: 18px; height: 18px; }
+        Text { text: item.title; color: #e3e7f3; font-size: 13px; overflow: elide; font-weight: item.project ? 600 : 400; }
+        if !item.project : Rectangle { width: 7px; height: 7px; border-radius: 4px; background: item.status == "running" ? #46cb7c : #7b8bab; }
+    }
+    if root.compact : Rectangle {
+        Image { x: (parent.width - 18px) / 2; y: 5px; width: 18px; height: 18px; source: item.project ? @image-url("assets/folder.svg") : @image-url("assets/chat.svg"); }
+        Text { y: 24px; width: parent.width; height: 14px; text: item.title; font-size: 9px; color: #c0cbe0; horizontal-alignment: center; overflow: elide; }
+        if !item.project : Rectangle { x: parent.width - 9px; y: 5px; width: 6px; height: 6px; border-radius: 3px; background: item.status == "running" ? #46cb7c : #7b8bab; }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => { if root.compact { root.hovered(self.has-hover ? root.item.title : "", root.absolute-position.y); } }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Ascurra Harness";
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 900px;
+    min-height: 620px;
+    background: #101822;
+    default-font-family: "Segoe UI";
+    default-font-size: 14px;
+
+    in property <[NavigationRow]> navigation;
+    in property <[TabRow]> tabs;
+    in property <[MessageRow]> messages;
+    callback chat-bubble-visibility(int, bool);
+    callback chat-measure-requested();
+    in property <int> chat-measurement-epoch;
+    in property <string> chat-title: "Tu espacio de trabajo";
+    in property <string> project-path: "Abrí un proyecto para empezar";
+    in property <string> notice: "";
+    in property <bool> codex-configured: false;
+    in property <bool> codex-authenticated: false;
+    in property <[string]> chat-models;
+    in-out property <int> chat-model-index: 0;
+    in-out property <int> chat-effort-index: 0;
+    in property <bool> has-chat: false;
+    in property <bool> has-project: false;
+    in property <bool> project-overview: false;
+    in property <string> overview-name;
+    in property <string> overview-description;
+    in property <string> overview-path;
+    in property <int> project-chat-count;
+    in property <int> project-running-count;
+    in property <[ProjectChatRow]> project-chats;
+    in-out property <bool> project-tasks-view: false;
+    in-out property <bool> project-settings-view: false;
+    in-out property <string> project-description;
+    in-out property <string> project-test-command;
+    in-out property <string> project-rules;
+    in-out property <[BuildCommandRow]> project-build-commands;
+    in property <string> project-config-message;
+    callback open-project-config();
+    callback save-project-config();
+    callback import-project-rules(int);
+    callback add-build-command();
+    callback remove-build-command(int);
+    callback edit-build-command(int, string, string);
+    in property <bool> queue-running;
+    in property <bool> queue-configured;
+    in property <bool> queue-active;
+    in property <string> queue-chat;
+    in property <string> queue-message;
+    in-out property <int> queue-provider-index: 0;
+    callback run-task-queue();
+    callback pause-task-queue();
+    callback advance-task-queue(string);
+    in property <[TaskRow]> tasks-todo;
+    in property <[TaskRow]> tasks-progress;
+    in property <[TaskRow]> tasks-done;
+    callback edit-task(string);
+    callback save-task();
+    in-out property <bool> task-dialog-open: false;
+    in-out property <string> task-edit-id;
+    in-out property <string> task-edit-project;
+    in-out property <string> task-title;
+    in-out property <string> task-objective;
+    in-out property <string> task-acceptance;
+    in-out property <int> task-severity: 1;
+    in-out property <int> task-status: 0;
+    in-out property <string> task-error;
+    in property <string> task-token-detail;
+    changed project-overview => { if !root.project-overview { root.task-dialog-open = false; root.project-settings-view = false; } }
+    in property <bool> chat-running: false;
+    private property <length> saved-chat-offset: 0px;
+    in property <string> token-summary: "Tokens: sin datos";
+    in property <string> context-summary: "Contexto: sin medición";
+    in property <float> context-fraction: 0;
+    out property <length> chat-scroll-offset: chat-scroll.content-y;
+    out property <length> chat-scroll-bottom: min(0px, chat-scroll.visible-height - chat-scroll.content-height);
+    changed chat-running => {
+        chat-scroll.content-y = root.chat-scroll-bottom;
+    }
+    in property <[QuotaRow]> quota-windows;
+    in-out property <int> quota-provider: 0;
+    in-out property <string> quota-chat-key;
+    in property <[QuotaRow]> claude-quota-windows;
+    in-out property <string> claude-quota-status: "Verifica Claude Code para consultar su cuota.";
+    in-out property <bool> claude-quota-busy: false;
+    in-out property <bool> claude-quota-refresh-pending: false;
+    in-out property <bool> quota-refresh-pending: false;
+    callback refresh-claude-quota(bool);
+    private property <[QuotaRow]> shown-quota-windows: root.quota-provider == 0 ? root.quota-windows : root.claude-quota-windows;
+    private property <int> quota-card-rows: max(2, max(root.quota-windows.length, root.claude-quota-windows.length));
+    private property <bool> shown-quota-busy: root.quota-provider == 0 ? root.quota-busy : root.claude-quota-busy;
+    changed quota-provider => { if root.quota-provider == 1 { root.refresh-claude-quota(false); } else { root.refresh-quota(false); } }
+    in property <string> quota-status: "Conectá ChatGPT para consultar tu cuota.";
+    in property <bool> quota-busy: false;
+    in-out property <int> quota-generation: 0;
+    in-out property <bool> quota-auto: true;
+    in property <string> approval-description;
+    in-out property <string> draft;
+    in-out property <int> provider-index: 0;
+    in-out property <[string]> available-agents: ["Sin agentes"];
+    in-out property <[string]> chat-efforts: ["Effort: auto"];
+    in-out property <bool> selected-agent-configured: false;
+    in-out property <bool> provider-editable: true;
+    in-out property <bool> claude-authenticated: false;
+    in-out property <string> claude-verified-path;
+    callback pick-chat-provider(int);
+    callback claude-auth-event(string);
+    private property <bool> project-dialog: false;
+    in-out property <string> project-name;
+    in-out property <string> new-path;
+    in property <bool> folder-picker-open: false;
+    in-out property <bool> settings-open: false;
+    private property <float> settings-progress: root.settings-open ? 1 : 0;
+    private property <float> project-progress: root.project-dialog ? 1 : 0;
+    animate settings-progress { duration: 220ms; easing: ease-out; }
+    animate project-progress { duration: 140ms; easing: ease-out; }
+    in property <bool> settings-busy: false;
+    in property <string> settings-notice: "Las comprobaciones de instalación no ejecutan inferencia.";
+    in-out property <bool> codex-enabled;
+    in-out property <string> codex-path;
+    in-out property <string> codex-model;
+    in-out property <int> codex-concurrency: 1;
+    in-out property <int> codex-effort-index: 0;
+    in property <string> codex-status: "Sin verificar en esta sesión.";
+    in property <[string]> codex-models;
+    in-out property <int> codex-model-index: 0;
+    in-out property <bool> claude-enabled;
+    in-out property <string> claude-path;
+    in-out property <string> claude-model;
+    in-out property <int> claude-concurrency: 1;
+    in property <string> claude-status: "Sin verificar en esta sesión.";
+
+    callback select-row(string);
+    callback close-tab(string);
+    callback new-chat();
+    callback add-project(string, string);
+    callback browse-folder();
+    callback send-message(string, int);
+    callback open-settings();
+    callback save-settings();
+    callback close-settings();
+    callback detect-agent(int);
+    callback browse-agent(int);
+    callback check-agent(int, bool);
+    callback invalidate-agent(int);
+    callback agent-event(string);
+    callback auth-event(string);
+    callback pick-codex-model(int);
+    callback disconnect-codex();
+    callback cancel-auth();
+    callback cancel-chat();
+    callback approve-tool(bool);
+    callback pick-chat-model(int);
+    callback pick-chat-effort(int);
+    callback refresh-quota(bool);
+    callback open-logs();
+    callback refresh-git();
+    callback git-query-finished();
+    callback git-action(string, string);
+    callback git-diff(string, bool);
+    callback git-file-diff(string, bool);
+    in-out property <bool> git-known: false;
+    in-out property <bool> git-repository: false;
+    in-out property <bool> git-remote: false;
+    in-out property <bool> git-has-staged: false;
+    in-out property <bool> git-history-view: false;
+    in-out property <string> git-commit-message;
+    in-out property <string> git-remote-url;
+    in-out property <string> git-origin-url;
+    in-out property <string> git-author-name;
+    in-out property <string> git-author-email;
+    in-out property <string> git-user-name;
+    in-out property <string> git-user-email;
+    in-out property <bool> git-settings-open: false;
+    in-out property <string> git-action-message;
+    in-out property <[GitCommitRow]> git-history;
+    in-out property <bool> git-open: false;
+    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : 0;
+    callback select-panel(int);
+    select-panel(index) => {
+        root.git-open = index == 1;
+        root.files-open = index == 2;
+        root.terminal-open = index == 3;
+        root.lint-open = index == 4;
+        root.docker-open = index == 5;
+        root.database-open = index == 6;
+        root.logcat-open = index == 7;
+        root.http-open = index == 8;
+    }
+    in-out property <length> side-panel-width: 310px;
+    in-out property <length> projects-panel-width: 280px;
+    in-out property <bool> projects-compact: false;
+    private property <string> projects-hover-title;
+    private property <length> projects-hover-y;
+    private property <length> projects-width: 280px;
+    private property <length> projects-max-width: 560px;
+    private property <bool> projects-dragging: false;
+    private property <length> panel-width: 310px;
+    private property <length> panel-max-width: 800px;
+    private property <bool> compact-composer: false;
+    private property <bool> panel-dragging: false;
+    private property <length> sidebar-reservation: root.sidebar-progress * (root.panel-width + 12px);
+    function update-workspace-layout() {
+        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? 292px : 0px)));
+        root.projects-width = root.projects-compact ? 72px : clamp(root.projects-panel-width, 260px, root.projects-max-width);
+        root.panel-max-width = max(280px, min(800px, root.width - root.projects-width - 360px));
+        root.panel-width = clamp(root.side-panel-width, 280px, root.panel-max-width);
+        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? root.panel-width + 12px : 0px) < 520px;
+    }
+    changed width => { root.update-workspace-layout(); }
+    changed side-panel-width => { root.update-workspace-layout(); }
+    changed projects-panel-width => { root.update-workspace-layout(); }
+    changed projects-compact => { root.projects-hover-title = ""; root.update-workspace-layout(); }
+    out property <length> projects-panel-visible-width: root.projects-width;
+    out property <length> side-panel-max-width: root.panel-max-width;
+    out property <length> workspace-visible-width: work-area.width;
+    out property <length> tab-visible-width: tab-scroll.item-width;
+    out property <length> tabs-viewport-width: tab-scroll.visible-width;
+    out property <length> side-panel-visible-width: root.panel-width;
+    in property <bool> git-busy: false;
+    in property <string> git-project;
+    in-out property <[string]> git-branches;
+    in-out property <int> git-branch-index: 0;
+    in-out property <bool> git-dirty: false;
+    in-out property <string> git-status: "Abrí un proyecto para consultar Git.";
+    in-out property <[GitRow]> git-files;
+    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-git(); } root.update-workspace-layout(); }
+    changed git-project => {
+        root.project-settings-view = false;
+        root.project-tasks-view = false;
+        root.task-dialog-open = false;
+        root.task-error = "";
+        root.git-files = [];
+        root.git-history = [];
+        root.git-known = false;
+        root.git-repository = false;
+        root.git-remote = false;
+        root.git-has-staged = false;
+        root.git-commit-message = "";
+        root.git-remote-url = "";
+        root.git-origin-url = "";
+        root.git-author-name = "";
+        root.git-author-email = "";
+        root.git-user-name = "";
+        root.git-user-email = "";
+        root.git-settings-open = false;
+        root.git-action-message = "";
+        root.git-branches = [];
+        root.git-branch-index = 0;
+        root.git-dirty = false;
+        root.git-status = root.git-project == "" ? "Abrí un proyecto para consultar Git." : "Consultando el repositorio…";
+        if root.git-open { root.refresh-git(); }
+        root.file-preview-open = false;
+        root.explorer-rows = [];
+        if root.files-open { root.refresh-explorer(false); }
+        root.database-schema = ""; root.database-schemas = []; root.database-entities = []; root.database-relations = [];
+        if root.database-open { root.refresh-database(true); }
+        root.docker-rows = []; root.docker-logs = []; root.docker-logs-open = false; root.docker-compose = false;
+        if root.docker-open { root.refresh-docker(); }
+        root.lint-rows = []; root.lint-all-rows = []; root.lint-tools = []; root.lint-config-open = false;
+        if root.lint-open { root.detect-lint(); }
+        if root.terminal-open { root.refresh-terminal(); }
+        if root.usage-open { root.refresh-usage(); }
+        root.http-variables-open = false;
+        if root.http-open { root.load-http(); }
+    }
+    in-out property <bool> files-open: false;
+    private property <float> git-progress: root.git-open ? 1 : 0;
+    private property <float> files-progress: root.files-open ? 1 : 0;
+    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open) ? 1 : 0;
+    animate git-progress, files-progress, logcat-progress, database-progress, docker-progress, lint-progress, terminal-progress, http-progress { duration: 180ms; easing: ease-out; }
+    in-out property <bool> database-open: false;
+    private property <float> database-progress: root.database-open ? 1 : 0;
+    in property <bool> database-busy: false;
+    in property <string> database-status;
+    in-out property <string> database-schema;
+    in-out property <[string]> database-schemas;
+    in-out property <int> database-schema-index: 0;
+    in-out property <[DatabaseEntity]> database-entities;
+    in-out property <[DatabaseRelation]> database-relations;
+    in property <float> database-width: 0;
+    in property <float> database-height: 0;
+    in-out property <float> database-zoom: 1;
+    in-out property <bool> database-relations-view: false;
+    callback refresh-database(bool);
+    callback browse-database-schema();
+    changed database-open => {
+        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-database(true); }
+        root.update-workspace-layout();
+    }
+    in-out property <bool> docker-open: false;
+    private property <float> docker-progress: root.docker-open ? 1 : 0;
+    in property <bool> docker-busy: false;
+    in-out property <bool> docker-compose: false;
+    in property <string> docker-status;
+    in-out property <[DockerRow]> docker-rows;
+    in-out property <bool> docker-logs-open: false;
+    in property <string> docker-log-title;
+    in-out property <[LogcatRow]> docker-logs;
+    callback refresh-docker();
+    callback docker-action(string, string);
+    changed docker-open => {
+        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.docker-logs-open = false; root.refresh-docker(); }
+        root.update-workspace-layout();
+    }
+    in-out property <bool> lint-open: false;
+    private property <float> lint-progress: root.lint-open ? 1 : 0;
+    in property <bool> lint-busy: false;
+    in property <string> lint-status;
+    in-out property <[ProblemRow]> lint-rows;
+    in-out property <[ProblemRow]> lint-all-rows;
+    callback filter-lint();
+    changed lint-filter => { root.filter-lint(); }
+    changed lint-severity => { root.filter-lint(); }
+    in-out property <[string]> lint-tools;
+    in-out property <int> lint-tool-index: 0;
+    in-out property <string> lint-filter;
+    in-out property <int> lint-severity: 0;
+    in-out property <bool> lint-config-open: false;
+    in-out property <string> lint-program;
+    in-out property <string> lint-args: "[]";
+    in-out property <string> lint-name: "Personalizado";
+    in-out property <int> lint-format-index: 0;
+    in-out property <bool> lint-report-files: false;
+    in property <string> lint-config-error;
+    in-out property <int> file-target-line: 0;
+    callback open-problem-file(string, int);
+    callback detect-lint(); callback run-lint(); callback stop-lint(); callback save-lint-config(); callback open-lint-logs();
+    changed lint-open => {
+        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.detect-lint(); }
+        root.update-workspace-layout();
+    }
+    in-out property <bool> http-open: false;
+    private property <float> http-progress: root.http-open ? 1 : 0;
+    in property <bool> http-busy: false;
+    in property <bool> http-ready: false;
+    in property <string> http-loaded-project;
+    in-out property <string> http-notice;
+    in-out property <[string]> http-collections;
+    in-out property <int> http-collection-index: 0;
+    in-out property <string> http-collection-name;
+    in-out property <bool> http-exposed: false;
+    in property <[HttpRequestRow]> http-requests;
+    in property <[string]> http-request-names;
+    in property <int> http-request-index;
+    in property <string> http-request-id;
+    in-out property <string> http-request-name;
+    in-out property <int> http-method-index: 0;
+    in-out property <string> http-url;
+    in-out property <string> http-headers;
+    in-out property <string> http-body;
+    in-out property <int> http-timeout: 30;
+    in-out property <int> http-request-view: 0;
+    in-out property <int> http-response-view: 0;
+    in property <[PreviewLine]> http-response-lines;
+    in property <int> http-response-columns;
+    in property <string> http-response-status;
+    in-out property <bool> http-variables-open: false;
+    in-out property <string> http-variables-json;
+    callback open-http(); callback load-http(); callback http-action(string);
+    callback pick-http-collection(int); callback pick-http-request(string);
+    callback send-http(); callback cancel-http(); callback show-http-response(); callback open-http-results();
+    changed http-response-view => { root.show-http-response(); }
+    open-http => { root.http-open = true; }
+    changed http-open => {
+        if root.http-open {
+            root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
+            if root.http-loaded-project != root.git-project { root.load-http(); }
+        }
+        root.update-workspace-layout();
+    }
+    in-out property <bool> usage-open: false;
+    in-out property <bool> usage-tab-open: false;
+    callback open-usage();
+    open-usage => { root.usage-tab-open = true; root.file-preview-open = false; root.usage-open = true; root.refresh-usage(); }
+    in property <bool> usage-busy: false;
+    in property <string> usage-status;
+    in property <string> usage-totals;
+    in-out property <int> usage-scope: 0;
+    in-out property <int> usage-view: 0;
+    in property <string> usage-selected-chat;
+    in property <[UsageRow]> usage-rows;
+    callback refresh-usage(); callback show-usage(); callback open-usage-report();
+    changed usage-scope => { if root.usage-open { root.refresh-usage(); } }
+    changed usage-view => { root.show-usage(); }
+    changed usage-selected-chat => { if root.usage-open && root.usage-scope == 1 { root.refresh-usage(); } }
+
+    in-out property <bool> terminal-open: false;
+    private property <float> terminal-progress: root.terminal-open ? 1 : 0;
+    in property <bool> terminal-busy: false;
+    in property <bool> terminal-running: false;
+    in-out property <int> terminal-shell-index: 0;
+    in property <string> terminal-status;
+    in property <[TerminalRow]> terminal-rows;
+    in property <int> terminal-cursor-row: 0;
+    in property <int> terminal-cursor-column: 0;
+    in property <bool> terminal-cursor-visible: false;
+    out property <int> terminal-width-columns: max(20, floor((root.panel-width - 36px) / 7.2px));
+    out property <int> terminal-height-rows: max(4, floor((root.height - 206px) / 18px));
+    callback start-terminal(); callback close-terminal(); callback refresh-terminal();
+    callback terminal-key(string, bool, bool, bool); callback terminal-scroll(int);
+    changed terminal-open => {
+        if root.terminal-open { root.http-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
+        root.refresh-terminal(); root.update-workspace-layout();
+    }
+    in property <bool> explorer-busy: false;
+    in-out property <[FileRow]> explorer-rows;
+    in property <string> explorer-status: "Abrí un proyecto para explorar sus archivos.";
+    in-out property <bool> file-preview-open: false;
+    changed file-preview-open => {
+        if root.file-preview-open { root.usage-open = false; }
+        if root.file-preview-open {
+            root.saved-chat-offset = chat-scroll.content-y;
+        } else {
+            chat-scroll.content-y = root.chat-running ? root.chat-scroll-bottom : min(0px, max(root.chat-scroll-bottom, root.saved-chat-offset));
+        }
+    }
+    in-out property <[FileTabRow]> file-tabs;
+    in-out property <string> file-preview-project;
+    in-out property <string> file-preview-path;
+    in-out property <string> file-preview-text;
+    in-out property <string> file-preview-status;
+    in property <[PreviewLine]> file-preview-lines;
+    in property <int> file-preview-columns;
+    in property <string> file-preview-location;
+    callback select-file-tab(string, string);
+    callback close-file-tab(string, string);
+    callback activate-file-project(string);
+    callback refresh-explorer(bool);
+    callback select-file(string);
+    callback explorer-event(string);
+    callback open-project-folder();
+    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
+
+    in-out property <bool> logcat-open: false;
+    private property <float> logcat-progress: root.logcat-open ? 1 : 0;
+    changed logcat-open => {
+        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.refresh-logcat-devices(); }
+        else { root.stop-logcat(); }
+        root.update-workspace-layout();
+    }
+    in property <[string]> logcat-devices;
+    in-out property <int> logcat-device-index: 0;
+    in property <bool> logcat-device-ready: false;
+    in property <bool> logcat-busy: false;
+    in property <bool> logcat-running: false;
+    in property <string> logcat-error;
+    in property <string> logcat-status: "Seleccioná un dispositivo para ver sus logs.";
+    in property <[LogcatRow]> logcat-lines;
+    in property <int> logcat-columns: 40;
+    in-out property <string> logcat-filter;
+    in-out property <int> logcat-level: 2;
+    in-out property <bool> logcat-follow: true;
+    callback refresh-logcat-devices();
+    callback select-logcat-device(int);
+    callback start-logcat();
+    callback stop-logcat();
+    callback clear-logcat();
+    callback filter-logcat();
+
+    // Paint the complete client area independently of the content layout.
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #101822;
+    }
+
+    VerticalBox {
+        width: root.width;
+        height: root.height;
+        padding: 14px;
+        spacing: 12px;
+        HorizontalBox {
+            height: 32px;
+            padding: 0px;
+            Image { source: @image-url("assets/logo.svg"); width: 28px; height: 28px; }
+            Text { text: "Ascurra Harness"; color: #f0f2fa; font-size: 19px; font-weight: 600; }
+            Text { text: "MVP 0.1"; color: #91a0bc; font-size: 12px; }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Uso"; icon: @image-url("assets/usage.svg"); enabled: root.has-project; clicked => { root.open-usage(); } }
+            Button { text: "Configuración"; icon: @image-url("assets/settings.svg"); clicked => { root.open-settings(); } }
+            PanelSelect {
+                width: 190px; height: 32px;
+                active-index: root.active-panel-index;
+                enabled: root.has-project;
+                selected(index) => { root.select-panel(index); }
+            }
+        }
+        HorizontalBox {
+            spacing: 12px;
+            padding: 0px;
+            padding-right: root.sidebar-reservation;
+            projects-panel := Rectangle {
+                width: root.projects-width;
+                background: #121d29;
+                border-color: #27354a;
+                border-width: 1px;
+                border-radius: 10px;
+                VerticalBox {
+                    padding: root.projects-compact ? 8px : 12px;
+                    spacing: 8px;
+                    if !root.projects-compact : HorizontalBox {
+                        height: 28px; padding: 0px; spacing: 6px;
+                        Text { text: "PROYECTOS Y CHATS"; color: #8291ad; font-size: 10px; horizontal-stretch: 1; min-width: 0px; overflow: elide; vertical-alignment: center; }
+                        Button { text: "Abrir"; icon: @image-url("assets/folder.svg"); accessible-label: "Abrir proyecto"; width: 84px; height: 28px; clicked => { root.project-dialog = true; } }
+                        IconButton { width: 28px; height: 28px; icon: @image-url("assets/chevron-left.svg"); label: "Compactar proyectos y chats"; clicked => { root.projects-compact = true; } }
+                    }
+                    if root.projects-compact : VerticalBox {
+                        height: 68px; padding: 0px; spacing: 8px; alignment: center;
+                        IconButton { width: 40px; height: 28px; icon: @image-url("assets/chevron-right.svg"); label: "Expandir proyectos y chats"; clicked => { root.projects-compact = false; } }
+                        IconButton { width: 40px; height: 32px; icon: @image-url("assets/folder.svg"); label: "Abrir proyecto"; clicked => { root.project-dialog = true; } }
+                    }
+                    ScrollView {
+                        content-width: self.visible-width;
+                        horizontal-scrollbar-policy: always-off;
+                        VerticalBox {
+                            spacing: 3px;
+                            for item in root.navigation : SidebarItem {
+                                item: item; compact: root.projects-compact;
+                                height: root.projects-compact ? 44px : item.project ? 42px : 36px;
+                                clicked => { root.projects-hover-title = ""; root.select-row(item.id); }
+                                hovered(title, y) => { root.projects-hover-title = title; root.projects-hover-y = y; }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                    }
+                    if root.projects-compact : Rectangle {
+                        height: 30px + root.quota-card-rows * 10px; background: #172332; border-radius: 8px;
+                        VerticalBox {
+                            padding: 6px; spacing: 5px;
+                            Text { height: 16px; text: root.quota-provider == 0 ? "Codex" : "Claude"; font-size: 10px; color: #c2cde0; horizontal-alignment: center; }
+                            for window in root.shown-quota-windows : Rectangle {
+                                height: 5px; border-radius: 3px; background: #2b394d;
+                                Rectangle { width: parent.width * window.remaining / 100; height: parent.height; background: window.remaining <= 15 ? #e3aa63 : #8e86ff; border-radius: 3px; }
+                            }
+                        }
+                        TouchArea { clicked => { if root.codex-authenticated && root.claude-authenticated { root.quota-provider = 1 - root.quota-provider; } } }
+                    }
+                    if !root.projects-compact : Rectangle {
+                        height: 84px + root.quota-card-rows * 45px;
+                        background: #172332; border-radius: 8px;
+                        VerticalBox {
+                            padding: 10px; spacing: 5px;
+                            HorizontalBox {
+                                padding: 0px;
+                                spacing: 6px; height: 28px;
+                                IconButton {
+                                    icon: @image-url("assets/chevron-left.svg"); width: 28px; height: 28px;
+                                    label: "Proveedor anterior";
+                                    enabled: root.codex-authenticated && root.claude-authenticated;
+                                    clicked => { root.quota-provider = root.quota-provider == 0 ? 1 : 0; }
+                                }
+                                Text { text: root.quota-provider == 0 ? "Codex" : "Claude"; color: #e3e7f3; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; horizontal-stretch: 1; }
+                                IconButton {
+                                    icon: @image-url("assets/quota-chevron-right.svg"); width: 28px; height: 28px;
+                                    label: "Proveedor siguiente";
+                                    enabled: root.codex-authenticated && root.claude-authenticated;
+                                    clicked => { root.quota-provider = root.quota-provider == 0 ? 1 : 0; }
+                                }
+                            }
+                            Rectangle {
+                                height: root.quota-card-rows * 45px - 5px;
+                                VerticalBox {
+                                    padding: 0px; spacing: 5px; alignment: start;
+                                    for window in root.shown-quota-windows : Rectangle {
+                                        height: 40px; vertical-stretch: 0;
+                                        Text { width: parent.width; height: 25px; text: window.caption; color: #c2cde0; font-size: 10px; wrap: word-wrap; }
+                                        Rectangle {
+                                            y: 30px; width: parent.width; height: 5px; border-radius: 3px; background: #2b394d;
+                                            Rectangle { x: 0px; y: 0px; width: parent.width * window.remaining / 100; height: parent.height; border-radius: 3px; background: window.remaining <= 15 ? #e3aa63 : #8e86ff; animate width { duration: 180ms; easing: ease-out; } }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalBox {
+                                padding: 0px; spacing: 6px; height: 28px; alignment: start;
+                                if root.shown-quota-busy : Rectangle {
+                                    width: 14px; height: 28px;
+                                    Image {
+                                        y: (parent.height - self.height) / 2;
+                                        width: 14px; height: 14px;
+                                        source: @image-url("assets/quota-spinner.svg");
+                                        transform-origin: { x: self.width / 2, y: self.height / 2 };
+                                        transform-rotation: 360deg * mod(animation-tick(), 900ms) / 900ms;
+                                        accessible-role: progress-indicator;
+                                        accessible-label: "Sincronizando cuota";
+                                    }
+                                }
+                                Text { text: root.shown-quota-busy ? "Sincronizando…" : (root.quota-provider == 0 ? root.quota-status : root.claude-quota-status); color: #8e9fba; font-size: 10px; height: 28px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; overflow: elide; }
+                            }
+                        }
+                    }
+                    if !root.projects-compact : Rectangle {
+                        height: 18px;
+                        private property <int> provider-count: (root.codex-authenticated ? 1 : 0) + (root.claude-authenticated ? 1 : 0);
+                        HorizontalBox {
+                            x: (parent.width - parent.provider-count * 16px) / 2;
+                            width: parent.provider-count * 16px; height: 18px; padding: 0px; spacing: 0px;
+                            if root.codex-authenticated : Rectangle {
+                                width: 16px; height: 18px;
+                                Rectangle { x: 4px; y: 5px; width: 8px; height: 8px; border-radius: 4px; background: root.quota-provider == 0 ? #a398ff : #39485e; animate background { duration: 120ms; } }
+                            }
+                            if root.claude-authenticated : Rectangle {
+                                width: 16px; height: 18px;
+                                Rectangle { x: 4px; y: 5px; width: 8px; height: 8px; border-radius: 4px; background: root.quota-provider == 1 ? #a398ff : #39485e; animate background { duration: 120ms; } }
+                            }
+                        }
+                    }
+                }
+            }
+            work-area := VerticalBox {
+                min-width: 0px;
+                spacing: 8px;
+                padding: 0px;
+                HorizontalBox {
+                    height: 40px;
+                    spacing: 4px;
+                    padding: 0px;
+                    IconButton {
+                        width: 40px; height: 40px;
+                        icon: @image-url("assets/plus.svg"); label: "Nuevo chat";
+                        enabled: root.has-project;
+                        clicked => { root.usage-open = false; root.new-chat(); }
+                    }
+                    tab-scroll := ScrollView {
+                        height: 40px; horizontal-stretch: 1; min-width: 0px;
+                        private property <int> tab-count: root.tabs.length + root.file-tabs.length + (root.usage-tab-open ? 1 : 0);
+                        private property <length> item-width: clamp((self.visible-width - max(0, self.tab-count - 1) * 4px) / max(1, self.tab-count), 96px, 190px);
+                        horizontal-scrollbar-policy: always-off; vertical-scrollbar-policy: always-off;
+                        content-height: 40px;
+                        content-width: max(self.visible-width, self.tab-count * self.item-width + max(0, self.tab-count - 1) * 4px);
+                        HorizontalBox {
+                            width: tab-scroll.content-width; height: 40px;
+                            padding: 0px; spacing: 4px; alignment: start;
+                            for tab in root.tabs : Rectangle {
+                                width: tab-scroll.item-width;
+                                border-radius: 7px;
+                                background: tab.selected && !root.file-preview-open && !root.usage-open ? #30316b : #192333;
+                                border-width: 1px;
+                                border-color: tab.selected && !root.file-preview-open && !root.usage-open ? #7970ff : #29364b;
+                                animate background, border-color { duration: 120ms; easing: ease-out; }
+                                Text { x: 10px; width: parent.width - 48px; height: parent.height; text: tab.title; color: #e3e7f3; overflow: elide; vertical-alignment: center; }
+                                TouchArea { width: parent.width - 36px; height: parent.height; clicked => { root.select-row(tab.id); } }
+                                Rectangle {
+                                    x: parent.width - 32px; y: 6px; width: 28px; height: 28px;
+                                    border-radius: 5px;
+                                    background: close-touch.has-hover ? #514f79 : transparent;
+                                    animate background { duration: 100ms; easing: ease-out; }
+                                    Text { text: "×"; color: #d1d8ea; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                                    close-touch := TouchArea { clicked => { root.close-tab(tab.id); } }
+                                }
+                            }
+                            if root.usage-tab-open : Rectangle {
+                                width: tab-scroll.item-width; border-radius: 7px;
+                                background: root.usage-open ? #30316b : #192333;
+                                border-width: 1px; border-color: root.usage-open ? #7970ff : #29364b;
+                                Image { x: 10px; y: 12px; width: 16px; height: 16px; source: @image-url("assets/usage.svg"); }
+                                Text { x: 32px; width: parent.width - 70px; height: parent.height; text: "Uso"; color: #e3e7f3; overflow: elide; vertical-alignment: center; }
+                                TouchArea { width: parent.width - 36px; clicked => { root.open-usage(); } }
+                                Rectangle {
+                                    x: parent.width - 32px; y: 6px; width: 28px; height: 28px; border-radius: 5px;
+                                    background: usage-close-touch.has-hover ? #514f79 : transparent;
+                                    Text { text: "×"; color: #d1d8ea; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                                    usage-close-touch := TouchArea { clicked => { root.usage-tab-open = false; root.usage-open = false; } }
+                                }
+                            }
+                            for tab in root.file-tabs : Rectangle {
+                                private property <bool> selected: root.file-preview-open && root.file-preview-project == tab.project && root.file-preview-path == tab.path;
+                                width: tab-scroll.item-width; border-radius: 7px;
+                                background: self.selected ? #30316b : #192333;
+                                border-width: 1px; border-color: self.selected ? #7970ff : #29364b;
+                                animate background, border-color { duration: 120ms; easing: ease-out; }
+                                Image { x: 10px; y: 12px; width: 16px; height: 16px; source: @image-url("assets/file.svg"); }
+                                Text { x: 32px; width: parent.width - 70px; height: parent.height; text: tab.title; color: #e3e7f3; overflow: elide; vertical-alignment: center; }
+                                TouchArea { width: parent.width - 36px; height: parent.height; clicked => { root.select-file-tab(tab.project, tab.path); } }
+                                Rectangle {
+                                    x: parent.width - 32px; y: 6px; width: 28px; height: 28px; border-radius: 5px;
+                                    background: file-close-touch.has-hover ? #514f79 : transparent;
+                                    animate background { duration: 100ms; }
+                                    Text { text: "×"; color: #d1d8ea; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                                    file-close-touch := TouchArea { clicked => { root.close-file-tab(tab.project, tab.path); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    clip: true;
+                    background: #141f2c;
+                    border-width: 1px;
+                    border-color: #2b384e;
+                    border-radius: 10px;
+    if root.usage-open : Rectangle {
+        width: parent.width; height: parent.height;
+        clip: true; background: #172332; border-radius: 10px; border-width: 1px; border-color: #354460;
+        VerticalBox {
+            padding: 20px; spacing: 12px;
+            HorizontalBox {
+                height: 28px; padding: 0px; spacing: 6px;
+                Image { source: @image-url("assets/usage.svg"); width: 18px; height: 18px; }
+                Text { text: "Uso"; color: #e3e7f3; font-size: 22px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                if root.usage-busy : Image { source: @image-url("assets/quota-spinner.svg"); width: 14px; height: 14px; transform-origin: { x: self.width / 2, y: self.height / 2 }; transform-rotation: 360deg * mod(animation-tick(), 900ms) / 900ms; }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/folder.svg"); label: "Abrir informes de uso"; enabled: !root.usage-busy; clicked => { root.open-usage-report(); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/refresh.svg"); label: "Actualizar uso"; enabled: !root.usage-busy; clicked => { root.refresh-usage(); } }
+            }
+            Text { text: root.overview-name + "  ›  " + root.overview-path; color: #91a0bc; font-size: 12px; overflow: elide; }
+            HorizontalBox {
+                padding: 0px; spacing: 12px; height: 32px;
+                ComboBox { width: 190px; height: 32px; model: ["Proyecto", "Chat actual"]; current-index <=> root.usage-scope; }
+                ComboBox { width: 190px; height: 32px; model: ["Herramientas", "Llamadas", "Modelos", "Procesos"]; current-index <=> root.usage-view; }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Text { text: root.usage-totals; color: #c9c3ff; font-size: 12px; wrap: word-wrap; }
+            Text { text: root.usage-view == 3 ? "Estimación del comando y de las lecturas de su resultado. No es consumo de CPU ni facturación exacta; logs anteriores pueden no vincular esas lecturas." : root.usage-view == 2 ? "Entrada y salida informadas por el proveedor. Caché y razonamiento ya están incluidos en esos totales." : "≈ Estimación de argumentos + respuesta, a 4 caracteres por token. No mide facturación ni las relecturas del contexto. Logs antiguos: solo respuesta, estimada por bytes."; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+            if root.usage-rows.length == 0 && !root.usage-busy : Text { text: "Todavía no hay métricas para esta vista. Los datos se registran al trabajar con los agentes."; color: #91a0bc; font-size: 12px; wrap: word-wrap; }
+            ListView {
+                for row in root.usage-rows : Rectangle {
+                    height: 164px; background: #1d2a3b; border-radius: 7px;
+                    VerticalBox {
+                        padding: 10px; spacing: 4px;
+                        Text { height: 28px; text: row.title; color: #e3e7f3; font-size: 12px; font-weight: 600; wrap: word-wrap; overflow: elide; }
+                        Text { height: 22px; text: row.metric; color: #b4aaff; font-size: 17px; font-weight: 600; }
+                        Rectangle { height: 6px; background: #303e55; border-radius: 3px;
+                            Rectangle { x: 0px; width: parent.width * row.ratio; height: parent.height; background: #9387ff; border-radius: 3px; }
+                        }
+                        Text { height: 32px; text: row.detail; color: #b7c4d8; font-size: 10px; wrap: word-wrap; overflow: elide; }
+                        Text { height: 24px; text: row.hint; color: #899bb8; font-size: 10px; wrap: word-wrap; overflow: elide; }
+                    }
+                }
+            }
+            Text { text: root.usage-status; color: #91a0bc; font-size: 10px; wrap: word-wrap; }
+            Text { text: "Los procesos locales no gastan tokens por ejecutarse. Su salida cuenta cuando el agente la lee."; color: #91a0bc; font-size: 10px; wrap: word-wrap; }
+        }
+    }
+
+
+                    VerticalBox {
+                        visible: !root.file-preview-open && !root.project-overview && !root.usage-open;
+                        padding: 16px;
+                        spacing: 12px;
+                        HorizontalBox {
+                            padding: 0px; height: 28px;
+                            Text { text: root.chat-title; color: #f0f2fa; font-size: 18px; font-weight: 600; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Button { text: "Logs"; height: 28px; width: 60px; enabled: root.has-chat; clicked => { root.open-logs(); } }
+                        }
+                        Text { text: root.project-path; color: #91a0bc; overflow: elide; height: 20px; }
+                        Rectangle { height: 1px; background: #2b384e; }
+                        chat-scroll := ScrollView {
+                            vertical-stretch: 1;
+                            content-width: self.visible-width;
+                            horizontal-scrollbar-policy: always-off;
+                            animate content-y { duration: 160ms; easing: ease-out; }
+                            changed content-height => {
+                                if root.chat-running || self.content-y < root.chat-scroll-bottom { self.content-y = root.chat-scroll-bottom; }
+                            }
+                            changed visible-height => {
+                                if root.chat-running || self.content-y < root.chat-scroll-bottom { self.content-y = root.chat-scroll-bottom; }
+                            }
+                            VerticalBox {
+                                padding: 12px;
+                                spacing: 14px;
+                                vertical-stretch: 0;
+                                if root.messages.length == 0 : Rectangle {
+                                    height: empty-detail.y + empty-detail.height + 24px;
+                                    vertical-stretch: 0;
+                                    Image { y: 20px; source: @image-url("assets/workspace.svg"); width: 120px; height: 96px; }
+                                    empty-title := Text { y: 132px; width: parent.width; height: self.preferred-height; text: root.has-chat ? "¿En qué trabajamos?" : "Todos tus proyectos en una ventana"; color: #dfe4f3; font-size: 20px; wrap: word-wrap; }
+                                    empty-detail := Text { y: empty-title.y + empty-title.height + 12px; width: parent.width; height: self.preferred-height; text: !root.has-chat ? "Abrí una carpeta para crear tu primer chat." : root.codex-configured ? "Escribí un pedido para Codex. Las acciones que modifican archivos o ejecutan comandos requieren tu aprobación." : "Configurá un agente para empezar. Tus conversaciones se guardan en este equipo."; color: #91a0bc; wrap: word-wrap; }
+                                }
+                                for message[index] in ((root.file-preview-open || root.usage-open ) ? [] : root.messages) : ChatMessage {
+                                    message: message;
+                                    defer-measurement: root.panel-dragging || root.projects-dragging;
+                                    visibility-changed(active) => { root.chat-bubble-visibility(index, active); }
+                                    measurement-epoch: root.chat-measurement-epoch;
+                                    measure-requested => { root.chat-measure-requested(); }
+                                    in-viewport: self.y + self.height >= -chat-scroll.content-y - 200px && self.y <= -chat-scroll.content-y + chat-scroll.visible-height + 200px;
+                                }
+                            }
+                        }
+                        if root.notice != "" : Text { text: root.notice; color: #a6b4cb; wrap: word-wrap; font-size: 12px; vertical-stretch: 0; }
+                        if root.approval-description != "" : Rectangle {
+                            height: 220px;
+                            background: #292640;
+                            border-radius: 8px;
+                            VerticalBox {
+                                padding: 10px;
+                                Text { text: "Acción pendiente de aprobación"; color: #eee8ff; font-weight: 600; }
+                                approval-scroll := ScrollView {
+                                    content-width: self.visible-width;
+                                    content-height: approval-text.height;
+                                    horizontal-scrollbar-policy: always-off;
+                                    approval-text := Text {
+                                        x: 0px; y: 0px;
+                                        width: approval-scroll.visible-width;
+                                        height: self.preferred-height;
+                                        text: root.approval-description;
+                                        color: #d1cce0;
+                                        font-family: "Consolas";
+                                        font-size: 12px;
+                                        vertical-alignment: top;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                HorizontalBox { Button { text: "Aprobar"; clicked => { root.approve-tool(true); } } Button { text: "Rechazar"; clicked => { root.approve-tool(false); } } }
+                            }
+                        }
+                        Rectangle {
+                            height: root.compact-composer ? 196px : 156px;
+                            border-radius: 9px;
+                            background: #192534;
+                            border-width: 1px;
+                            border-color: #34435c;
+                            VerticalBox {
+                                padding: 10px;
+                                padding-bottom: 0px;
+                                spacing: 0px;
+                                HorizontalBox {
+                                    height: 26px; padding: 0px; spacing: 9px;
+                                    Rectangle { horizontal-stretch: 1; min-width: 0px; }
+                                    Text { text: root.context-summary; color: #a6b4cb; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 0; vertical-alignment: center; }
+                                    Rectangle {
+                                        width: 70px; height: 26px;
+                                        Rectangle {
+                                            y: 11px; height: 4px; width: parent.width; background: #29374b; border-radius: 2px;
+                                            Rectangle { x: 0px; y: 0px; height: parent.height; width: parent.width * root.context-fraction; background: root.context-fraction >= 0.85 ? #e5ad62 : #9182ff; border-radius: 2px; animate width { duration: 120ms; } }
+                                        }
+                                    }
+                                }
+                                TextEdit { text <=> root.draft; enabled: root.has-chat; font-size: 14px; }
+                                Rectangle {
+                                    height: root.compact-composer ? 88px : 48px;
+                                  if !root.compact-composer : HorizontalBox {
+                                    y: 8px; width: parent.width; height: 32px;
+                                    padding: 0px;
+                                    spacing: 6px;
+                                    Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    ComboBox { model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } width: 95px; height: 32px; }
+                                    ComboBox { model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 140px; height: 32px; selected => { root.pick-chat-model(self.current-index); } }
+                                    ComboBox { model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 95px; height: 32px; selected => { root.pick-chat-effort(self.current-index); } }
+                                    if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
+                                    Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && root.draft != ""; clicked => { root.send-message(root.draft, root.provider-index); } }
+                                  }
+                                  if root.compact-composer : VerticalBox {
+                                    y: 8px; width: parent.width; height: 72px;
+                                    padding: 0px; spacing: 8px;
+                                    HorizontalBox {
+                                        height: 32px; padding: 0px; spacing: 6px;
+                                        Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                                        if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
+                                        Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && root.draft != ""; clicked => { root.send-message(root.draft, root.provider-index); } }
+                                    }
+                                    HorizontalBox {
+                                        height: 32px; padding: 0px; spacing: 6px;
+                                        ComboBox { min-width: 0px; max-width: 95px; horizontal-stretch: 1; height: 32px; model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } }
+                                        ComboBox { min-width: 0px; max-width: 140px; horizontal-stretch: 2; height: 32px; model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-model(self.current-index); } }
+                                        ComboBox { min-width: 0px; max-width: 95px; horizontal-stretch: 1; height: 32px; model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-effort(self.current-index); } }
+                                    }
+                                  }
+                                }
+                            }
+                        }
+                    }
+                    if root.project-overview && !root.file-preview-open && !root.usage-open : Rectangle {
+                        background: #141f2c; border-width: 1px; border-color: #2b384e; border-radius: 10px;
+                        VerticalBox {
+                            padding: 20px; spacing: 16px;
+                            HorizontalBox {
+                                padding: 0px; spacing: 12px; height: 40px;
+                                Image { source: @image-url("assets/folder.svg"); width: 32px; height: 32px; }
+                                Text { text: root.overview-name; font-size: 24px; font-weight: 600; color: #f0f2fa; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                Button { text: "Nuevo chat"; icon: @image-url("assets/plus.svg"); height: 32px; clicked => { root.usage-open = false; root.new-chat(); } }
+                            }
+                            Text { text: root.overview-path; color: #91a0bc; font-size: 12px; overflow: elide; }
+                            Rectangle { height: 1px; background: #2b384e; }
+                            HorizontalBox {
+                                padding: 0px; spacing: 6px; height: 32px;
+                                Button { text: "Resumen"; enabled: root.project-tasks-view || root.project-settings-view; clicked => { root.project-tasks-view = false; root.project-settings-view = false; } }
+                                Button { text: "Tareas"; enabled: !root.project-tasks-view || root.project-settings-view; clicked => { root.project-tasks-view = true; root.project-settings-view = false; } }
+                                Button { text: "Configuración"; icon: @image-url("assets/settings.svg"); enabled: !root.project-settings-view; clicked => { root.open-project-config(); } }
+                                Rectangle { horizontal-stretch: 1; }
+                                if root.project-tasks-view : Button { text: "Nueva tarea"; icon: @image-url("assets/plus.svg"); clicked => { root.edit-task(""); } }
+                            }
+                            if !root.project-tasks-view && !root.project-settings-view : VerticalBox {
+                                padding: 0px; spacing: 16px;
+                            if root.overview-description != "" : Text { text: root.overview-description; color: #dfe4f3; font-size: 13px; wrap: word-wrap; }
+                            HorizontalBox {
+                                padding: 0px; spacing: 12px; height: 78px;
+                                Rectangle { horizontal-stretch: 1; background: #192534; border-radius: 8px;
+                                    VerticalBox { padding: 12px; spacing: 4px;
+                                        Text { text: root.project-chat-count; color: #eee8ff; font-size: 24px; }
+                                        Text { text: "Chats"; color: #91a0bc; font-size: 12px; }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; background: #192534; border-radius: 8px;
+                                    VerticalBox { padding: 12px; spacing: 4px;
+                                        Text { text: root.project-running-count; color: #78c99b; font-size: 24px; }
+                                        Text { text: "En curso"; color: #91a0bc; font-size: 12px; }
+                                    }
+                                }
+                            }
+                            HorizontalBox {
+                                padding: 0px; spacing: 8px; height: 32px;
+                                Button { text: "Git"; icon: @image-url("assets/git.svg"); clicked => { root.git-open = true; } }
+                                Button { text: "Archivos"; icon: @image-url("assets/folder.svg"); clicked => { root.files-open = true; } }
+                                Button { text: "Abrir carpeta"; clicked => { root.open-project-folder(); } }
+                            }
+                            Text { text: "Chats del proyecto"; color: #dfe4f3; font-weight: 600; font-size: 14px; }
+                            if root.project-chats.length == 0 : Text { text: "Creá un chat para empezar a trabajar en este proyecto."; color: #91a0bc; wrap: word-wrap; }
+                            ListView {
+                                horizontal-scrollbar-policy: always-off;
+                                for chat in root.project-chats : Rectangle {
+                                    height: 66px;
+                                    Rectangle { height: parent.height - 6px; width: parent.width; background: project-chat-touch.has-hover ? #253448 : #192534; border-radius: 7px; }
+                                    Image { x: 12px; y: 20px; width: 20px; height: 20px; source: @image-url("assets/chat.svg"); }
+                                    Text { x: 44px; y: 10px; width: max(0px, parent.width - 188px); height: 20px; text: chat.title; color: #e3e7f3; font-size: 13px; overflow: elide; }
+                                    Text { x: 44px; y: 32px; width: max(0px, parent.width - 188px); height: 18px; text: chat.detail; color: #91a0bc; font-size: 11px; overflow: elide; }
+                                    Text { x: parent.width - 136px; width: 124px; height: 60px; text: chat.status; color: chat.running ? #78c99b : #91a0bc; font-size: 11px; horizontal-alignment: right; vertical-alignment: center; overflow: elide; }
+                                    project-chat-touch := TouchArea { clicked => { root.select-row(chat.id); } }
+                                }
+                            }
+                            }
+                            if root.project-settings-view : VerticalBox {
+                                padding: 0px; spacing: 10px;
+                                ScrollView {
+                                    horizontal-scrollbar-policy: always-off;
+                                    content-width: self.visible-width;
+                                    VerticalBox {
+                                        width: parent.visible-width; padding: 0px; padding-right: 8px; spacing: 10px;
+                                        Text { text: "Descripción breve"; color: #dfe4f3; font-weight: 600; }
+                                        TextEdit { text <=> root.project-description; height: 64px; }
+                                        HorizontalBox {
+                                            padding: 0px; height: 30px;
+                                            Text { text: "Compilación"; color: #dfe4f3; font-weight: 600; horizontal-stretch: 1; }
+                                            Button { text: "Agregar comando"; icon: @image-url("assets/plus.svg"); clicked => { root.add-build-command(); } }
+                                        }
+                                        for build[index] in root.project-build-commands : Rectangle {
+                                            height: 96px; background: #192534; border-radius: 7px;
+                                            VerticalBox {
+                                                padding: 10px; spacing: 6px;
+                                                HorizontalBox {
+                                                    padding: 0px; spacing: 6px;
+                                                    LineEdit { text: build.command; placeholder-text: "Comando, por ejemplo: cargo build --release"; horizontal-stretch: 1; edited => { root.edit-build-command(index, self.text, build.purpose); } }
+                                                    IconButton { width: 30px; height: 30px; icon: @image-url("assets/minus.svg"); label: "Eliminar comando"; clicked => { root.remove-build-command(index); } }
+                                                }
+                                                LineEdit { text: build.purpose; placeholder-text: "Cuándo usarlo, por ejemplo: generar la versión de distribución"; edited => { root.edit-build-command(index, build.command, self.text); } }
+                                            }
+                                        }
+                                        if root.project-build-commands.length == 0 : Text { text: "Agregá un comando para cada caso: desarrollo, release u otras variantes."; color: #91a0bc; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: "Comando de tests"; color: #dfe4f3; font-weight: 600; }
+                                        LineEdit { text <=> root.project-test-command; placeholder-text: "Por ejemplo: cargo test --offline"; }
+                                        HorizontalBox {
+                                            padding: 0px; spacing: 6px; height: 30px;
+                                            Text { text: "Reglas básicas del proyecto"; color: #dfe4f3; font-weight: 600; horizontal-stretch: 1; }
+                                            Button { text: "Cargar Codex"; clicked => { root.import-project-rules(0); } }
+                                            Button { text: "Cargar Claude"; clicked => { root.import-project-rules(1); } }
+                                            Button { text: "Ambos"; clicked => { root.import-project-rules(2); } }
+                                        }
+                                        TextEdit { text <=> root.project-rules; height: 220px; }
+                                    }
+                                }
+                                if root.project-config-message != "" : Text { text: root.project-config-message; color: #b7afff; font-size: 12px; wrap: word-wrap; }
+                                HorizontalBox {
+                                    padding: 0px; spacing: 8px; height: 32px;
+                                    Text { text: "Los comandos se ejecutan en la carpeta del proyecto."; color: #91a0bc; font-size: 11px; wrap: word-wrap; horizontal-stretch: 1; }
+                                    Button { text: "Guardar"; clicked => { root.save-project-config(); } }
+                                }
+                            }
+                            if root.project-tasks-view && !root.project-settings-view : VerticalBox {
+                                padding: 0px; spacing: 10px;
+                                HorizontalBox {
+                                    padding: 0px; spacing: 8px; height: 32px;
+                                    ComboBox { model: root.available-agents; current-index <=> root.queue-provider-index; width: 120px; enabled: root.queue-configured && !root.queue-running && !root.queue-active; }
+                                    if !root.queue-running : Button { text: "Ejecutar cola"; icon: @image-url("assets/play.svg"); enabled: root.queue-configured && !root.queue-active && root.tasks-todo.length > 0; clicked => { root.run-task-queue(); } }
+                                    if root.queue-running : Button { text: "Pausar cola"; icon: @image-url("assets/pause.svg"); clicked => { root.pause-task-queue(); } }
+                                    if root.queue-chat != "" : Button { text: "Abrir chat actual"; icon: @image-url("assets/chat.svg"); clicked => { root.select-row(root.queue-chat); } }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                if root.queue-message != "" : Text { text: root.queue-message; color: #91a0bc; wrap: word-wrap; font-size: 11px; }
+                                if root.task-error != "" && !root.task-dialog-open : Text { text: root.task-error; color: #ed9696; wrap: word-wrap; font-size: 12px; }
+                                task-board := ScrollView {
+                                    content-width: max(self.visible-width, 744px); content-height: self.visible-height;
+                                    vertical-scrollbar-policy: always-off;
+                                    HorizontalBox {
+                                        width: task-board.content-width; height: task-board.visible-height; min-width: 0px; min-height: 0px;
+                                        padding: 0px; spacing: 12px;
+                                        TaskColumn { min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; title: "Por hacer"; accent: #b7afff; tasks: root.tasks-todo; edit(id) => { root.edit-task(id); } open-chat(id) => { root.select-row(id); } }
+                                        TaskColumn { min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; title: "En progreso"; accent: #dcb27c; tasks: root.tasks-progress; edit(id) => { root.edit-task(id); } open-chat(id) => { root.select-row(id); } }
+                                        TaskColumn { min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; title: "Realizadas"; accent: #78c99b; tasks: root.tasks-done; edit(id) => { root.edit-task(id); } open-chat(id) => { root.select-row(id); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.file-preview-open : Rectangle {
+                        background: #141f2c; border-width: 1px; border-color: #2b384e; border-radius: 10px;
+                        VerticalBox {
+                            padding: 16px; spacing: 10px;
+                            file-viewer := FileViewer { target-line: root.file-target-line; lines: root.file-preview-lines; columns: root.file-preview-columns; }
+                            Rectangle {
+                                height: 26px; background: #172332; border-radius: 4px;
+                                HorizontalBox {
+                                    padding-left: 8px; padding-right: 8px; padding-top: 0px; padding-bottom: 0px; spacing: 12px;
+                                    Text { text: root.file-preview-location; color: #91a0bc; font-size: 11px; vertical-alignment: center; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                                    Text { text: root.file-preview-status; color: #91a0bc; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.git-open || root.git-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.git-progress) * (self.width + 14px); y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                Rectangle {
+                    height: 32px; horizontal-stretch: 1; border-radius: 7px; border-width: 1px;
+                    border-color: #34435c; background: #1b2737;
+                    Rectangle {
+                        x: root.git-history-view ? 2px + self.width : 2px;
+                        y: 2px; width: (parent.width - 4px) / 2; height: parent.height - 4px;
+                        border-radius: 5px; border-width: 1px; border-color: #7970ff; background: #30316b;
+                        animate x { duration: 120ms; easing: ease-out; }
+                    }
+                    Text { x: 0px; width: parent.width / 2; height: parent.height; text: "Cambios"; color: !root.git-history-view ? #eee8ff : #91a0bc; horizontal-alignment: center; vertical-alignment: center; font-size: 12px; }
+                    Text { x: parent.width / 2; width: parent.width / 2; height: parent.height; text: "Historial"; color: root.git-history-view ? #eee8ff : #91a0bc; horizontal-alignment: center; vertical-alignment: center; font-size: 12px; }
+                    TouchArea { width: parent.width / 2; clicked => { root.git-history-view = false; } }
+                    TouchArea { x: parent.width / 2; width: parent.width / 2; clicked => { root.git-history-view = true; } }
+                }
+                if root.git-repository : IconButton { width: 32px; height: 32px; icon: @image-url("assets/settings.svg"); label: "Configurar Git"; enabled: !root.git-busy; clicked => { root.git-remote-url = root.git-origin-url; root.git-user-name = root.git-author-name; root.git-user-email = root.git-author-email; root.git-action-message = ""; root.git-settings-open = true; } }
+            }
+            if root.git-status != "" : Text { text: root.git-status; color: #91a0bc; wrap: word-wrap; font-size: 11px; }
+            if root.git-action-message != "" : ScrollView {
+                height: min(72px, git-action-text.preferred-height);
+                content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+                git-action-text := Text { text: root.git-action-message; color: #dfe4f3; wrap: word-wrap; font-size: 11px; }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/refresh.svg"); label: "Actualizar Git"; enabled: !root.git-busy && root.git-project != ""; clicked => { root.refresh-git(); } }
+                if root.git-repository : ComboBox {
+                    min-width: 0px; max-width: 100000px; horizontal-stretch: 1; height: 32px;
+                    model: root.git-branches; current-index <=> root.git-branch-index;
+                    enabled: !root.git-busy && !root.git-dirty && root.git-branches.length > 1;
+                    selected => { root.git-action("switch", root.git-branches[self.current-index]); }
+                }
+                if root.git-repository : IconButton { width: 32px; height: 32px; icon: @image-url("assets/pull.svg"); label: "Pull: traer cambios"; enabled: !root.git-busy && root.git-remote; clicked => { root.git-action("pull", ""); } }
+                if root.git-repository : IconButton { width: 32px; height: 32px; icon: @image-url("assets/push.svg"); label: "Push: publicar commits"; enabled: !root.git-busy && root.git-remote; clicked => { root.git-action("push", ""); } }
+            }
+            if root.git-known && !root.git-repository : Button {
+                text: "Inicializar repositorio"; height: 32px; enabled: !root.git-busy;
+                clicked => { root.git-action("init", ""); }
+            }
+            if !root.git-history-view && root.git-repository && root.git-files.length == 0 : Text { text: "No hay archivos con cambios."; color: #91a0bc; font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
+            if root.git-history-view && root.git-repository && root.git-history.length == 0 : Text { text: "Todavía no hay commits."; color: #91a0bc; font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
+            if !root.git-history-view : ListView {
+                horizontal-scrollbar-policy: always-off;
+                for file in root.git-files : Rectangle {
+                    height: file.header ? 30px : 40px;
+                    background: file.header ? #192534 : git-file-touch.has-hover ? #223145 : transparent;
+                    if file.header : Text {
+                        x: 8px; width: parent.width - (file.prepared ? 16px : 132px); height: parent.height;
+                        text: file.name; color: #c8cde0; font-size: 11px; font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    if file.header && !file.prepared : Rectangle {
+                        x: parent.width - 118px; width: 110px; height: parent.height;
+                        accessible-role: button; accessible-label: "Seleccionar todos";
+                        accessible-enabled: !root.git-busy;
+                        accessible-action-default => { if !root.git-busy { root.git-action("stage-all", ""); } }
+                        forward-focus: select-all-focus;
+                        Text { width: parent.width; height: parent.height; text: "Seleccionar todos"; font-size: 11px; color: root.git-busy ? #68738b : select-all-touch.has-hover ? #d5cfff : #b7afff; horizontal-alignment: right; vertical-alignment: center; }
+                        select-all-touch := TouchArea { enabled: !root.git-busy; clicked => { root.git-action("stage-all", ""); } }
+                        select-all-focus := FocusScope {
+                            x: 0px; width: 0px; enabled: !root.git-busy;
+                            key-pressed(event) => { if event.text == " " || event.text == "\n" { root.git-action("stage-all", ""); return accept; } return reject; }
+                        }
+                    }
+                    git-file-touch := TouchArea {
+                        enabled: !file.header && !root.git-busy;
+                        x: 34px; width: parent.width - 34px;
+                        clicked => { root.git-file-diff(file.target, file.prepared); }
+                    }
+                    if !file.header : HorizontalBox {
+                        x: 7px; width: parent.width - 14px; height: parent.height; padding: 0px; spacing: 5px;
+                        Rectangle {
+                            width: 24px; height: 40px;
+                            GitSelectionCheckbox {
+                                y: 8px; checked: file.prepared; enabled: !root.git-busy;
+                                label: (file.prepared ? "Retirar del commit " : "Preparar para commit ") + file.path;
+                                toggled => { root.git-action(file.prepared ? "unstage" : "stage", file.target); }
+                            }
+                        }
+                        Rectangle { width: 16px; height: 40px; Image { y: 12px; width: 16px; height: 16px; source: @image-url("assets/file.svg"); } }
+                        Rectangle {
+                            horizontal-stretch: 1; min-width: 0px; height: 40px;
+                            Text { y: file.directory == "" ? 10px : 4px; width: parent.width; height: 18px; text: file.name; color: #e3e7f3; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                            if file.directory != "" : Text { y: 22px; width: parent.width; height: 14px; text: file.directory; color: #8291ad; font-size: 10px; overflow: elide; vertical-alignment: center; }
+                        }
+                        if file.added != "" : Text { text: file.added; color: #78c99b; font-size: 11px; vertical-alignment: center; }
+                        if file.removed != "" : Text { text: file.removed; color: #ed9696; font-size: 11px; vertical-alignment: center; }
+                        if file.stats != "" : Text { text: file.stats; color: #8291ad; font-size: 10px; vertical-alignment: center; }
+                        Text { text: file.code; color: file.status == "Conflicto" ? #ec9c85 : file.code == "D" ? #ed9696 : file.code == "A" || file.code == "U" ? #78c99b : #dcb27c; font-size: 11px; vertical-alignment: center; width: 12px; horizontal-alignment: center; }
+
+                    }
+                }
+            }
+
+            if root.git-history-view : ListView {
+                horizontal-scrollbar-policy: always-off;
+                    for commit in root.git-history : Rectangle {
+                        height: commit-title.preferred-height + commit-detail.preferred-height + 36px;
+                        Rectangle { width: parent.width; height: parent.height - 8px; background: commit-touch.has-hover ? #253448 : #1c2939; border-radius: 6px; }
+                        commit-title := Text { x: 9px; y: 8px; width: parent.width - 18px; height: self.preferred-height; text: commit.title; color: #e3e7f3; wrap: word-wrap; font-size: 12px; }
+                        commit-detail := Text { x: 9px; y: commit-title.y + commit-title.height + 6px; width: parent.width - 18px; height: self.preferred-height; text: commit.detail; color: #91a0bc; wrap: word-wrap; font-size: 10px; }
+                        commit-touch := TouchArea { enabled: !root.git-busy; clicked => { root.git-diff(commit.id, true); } }
+                    }
+            }
+            if root.git-repository && !root.git-history-view : Rectangle {
+                height: 140px;
+                border-radius: 9px; background: #192534;
+                border-width: 1px; border-color: #34435c;
+                VerticalBox {
+                    padding: 10px; spacing: 8px;
+                    TextEdit {
+                        text <=> root.git-commit-message; placeholder-text: "Mensaje del commit…";
+                        enabled: !root.git-busy; font-size: 14px; min-height: 0px;
+                    }
+                    Button {
+                        text: "Commit"; icon: @image-url("assets/git.svg"); height: 32px; horizontal-stretch: 1;
+                        enabled: !root.git-busy && root.git-has-staged && root.git-commit-message != "";
+                        clicked => { root.git-action("commit", root.git-commit-message); }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.files-open || root.files-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.files-progress) * (self.width + 14px); y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 9px;
+            HorizontalBox {
+                padding: 0px;
+                Text { text: "Archivos"; color: #eee8ff; font-size: 17px; font-weight: 600; horizontal-stretch: 1; }
+                Button { text: "Cerrar"; width: 65px; height: 28px; clicked => { root.files-open = false; } }
+            }
+            Text { text: root.project-path; color: #91a0bc; font-size: 10px; overflow: elide; }
+            Text { text: root.explorer-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+            HorizontalBox {
+                padding: 0px;
+                Button { text: "Actualizar"; height: 28px; enabled: !root.explorer-busy; clicked => { root.refresh-explorer(true); } }
+                Button { text: "Abrir carpeta"; height: 28px; enabled: root.has-project; clicked => { root.open-project-folder(); } }
+            }
+            ScrollView {
+                content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+                VerticalBox {
+                    padding: 0px; spacing: 2px; vertical-stretch: 0;
+                    for file in root.explorer-rows : Rectangle {
+                        height: 29px; border-radius: 5px;
+                        background: file-touch.has-hover ? #243247 : transparent;
+                        animate background { duration: 100ms; }
+                        Image { x: min(file.depth * 12px, 120px); y: 7px; width: 14px; height: 14px; visible: file.directory; source: file.expanded ? @image-url("assets/chevron-down.svg") : @image-url("assets/chevron-right.svg"); }
+                        Image { x: min(file.depth * 12px, 120px) + 17px; y: 6px; width: 16px; height: 16px; source: file.directory ? @image-url("assets/folder.svg") : @image-url("assets/file.svg"); }
+                        Text { x: min(file.depth * 12px, 120px) + 39px; width: parent.width - self.x - 5px; height: parent.height; text: file.name; color: #dfe4f3; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                        file-touch := TouchArea { enabled: !root.explorer-busy; clicked => { root.select-file(file.path); } }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.logcat-open || root.logcat-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.logcat-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 9px;
+            ComboBox { height: 32px; model: root.logcat-devices; current-index <=> root.logcat-device-index; enabled: !root.logcat-busy; selected => { root.select-logcat-device(self.current-index); } }
+            HorizontalBox {
+                padding: 0px; spacing: 6px;
+                IconButton {
+                    width: 32px; height: 32px;
+                    icon: root.logcat-running ? @image-url("assets/pause.svg") : @image-url("assets/play.svg");
+                    label: root.logcat-running ? "Pausar Logcat" : "Iniciar Logcat";
+                    enabled: root.logcat-running || (root.logcat-device-ready && !root.logcat-busy);
+                    clicked => { if root.logcat-running { root.stop-logcat(); } else { root.start-logcat(); } }
+                }
+                ComboBox { model: ["Verbose+", "Debug+", "Info+", "Warning+", "Error+", "Fatal"]; current-index <=> root.logcat-level; horizontal-stretch: 1; selected => { root.filter-logcat(); } }
+                CheckBox { text: "Seguir"; checked <=> root.logcat-follow; }
+            }
+            if root.logcat-error != "" : Text { text: root.logcat-error; color: #ec9c85; wrap: word-wrap; font-size: 11px; }
+            log-scroll := ListView {
+                private property <bool> following: root.logcat-follow;
+                changed following => { if self.following { self.content-y = min(0px, self.visible-height - self.content-height); } }
+                vertical-stretch: 1;
+                content-width: max(self.visible-width, root.logcat-columns * 7.5px + 12px);
+                changed content-height => { if root.logcat-follow { self.content-y = min(0px, self.visible-height - self.content-height); } }
+                changed visible-height => { if root.logcat-follow { self.content-y = min(0px, self.visible-height - self.content-height); } }
+                for line in root.logcat-lines : Rectangle {
+                    height: 20px; width: log-scroll.content-width;
+                    TextInput { x: 4px; height: 20px; width: parent.width - 8px; text: line.text; font-family: "Consolas"; font-size: 12px; read-only: true; wrap: no-wrap; vertical-alignment: center; color: line.level == "E" || line.level == "F" ? #ec9c85 : line.level == "W" ? #e3aa63 : #dfe4f3; }
+                }
+            }
+            Rectangle { height: 1px; background: #27354a; }
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                LineEdit { height: 32px; horizontal-stretch: 1; text <=> root.logcat-filter; placeholder-text: "Filtrar texto, tag o PID…"; edited => { root.filter-logcat(); } }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/clear.svg"); label: "Limpiar buffer local de Logcat"; clicked => { root.clear-logcat(); } }
+            }
+        }
+    }
+
+    // Resize the panel and workspace together, preserving a usable chat width.
+    if root.http-open || root.http-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.http-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        clip: true; background: #172332; border-radius: 10px; border-width: 1px; border-color: #354460;
+        VerticalBox {
+            padding: 12px; spacing: 6px;
+            HorizontalBox {
+                height: 28px; padding: 0px; spacing: 4px;
+                Image { source: @image-url("assets/http.svg"); width: 18px; height: 18px; }
+                Text { text: "HTTP"; color: #e3e7f3; font-size: 17px; horizontal-stretch: 1; vertical-alignment: center; }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/settings.svg"); label: "Variables del proyecto"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("variables"); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/folder.svg"); label: "Abrir respuestas guardadas"; clicked => { root.open-http-results(); } }
+            }
+            HorizontalBox {
+                height: 32px; padding: 0px; spacing: 4px;
+                ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-collections; current-index <=> root.http-collection-index; enabled: !root.http-busy; selected => { root.pick-http-collection(self.current-index); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Nueva colección"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("collection"); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar colección"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("delete-collection"); } }
+            }
+            LineEdit { height: 32px; text <=> root.http-collection-name; placeholder-text: "Nombre de colección"; enabled: !root.http-busy && root.http-collections.length > 0; }
+            CheckBox { text: "Exponer a agentes"; checked <=> root.http-exposed; enabled: !root.http-busy && root.http-collections.length > 0; toggled => { root.http-notice = "Guardá para aplicar la exposición a agentes."; } }
+            HorizontalBox {
+                height: 32px; padding: 0px; spacing: 4px;
+                ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-request-names; current-index: root.http-request-index; enabled: !root.http-busy; selected => { root.pick-http-request(root.http-requests[self.current-index].id); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Nueva request"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("request"); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar request"; enabled: !root.http-busy && root.http-request-id != ""; clicked => { root.http-action("delete"); } }
+            }
+            LineEdit { height: 32px; text <=> root.http-request-name; placeholder-text: "Nombre de la request"; enabled: root.http-request-id != "" && !root.http-busy; }
+            LineEdit { height: 32px; text <=> root.http-url; placeholder-text: "{{BASE_URL}}/ruta"; enabled: !root.http-busy; }
+            HorizontalBox {
+                height: 32px; padding: 0px; spacing: 6px;
+                ComboBox { width: 90px; height: 32px; model: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]; current-index <=> root.http-method-index; enabled: !root.http-busy; }
+                SpinBox { width: 65px; height: 32px; minimum: 1; maximum: 120; value <=> root.http-timeout; enabled: !root.http-busy; accessible-label: "Timeout en segundos"; }
+                Button { height: 32px; min-width: 0px; horizontal-stretch: 1; text: root.http-busy ? "Cancelar" : "Enviar"; enabled: root.http-busy || root.http-request-id != ""; clicked => { if root.http-busy { root.cancel-http(); } else { root.send-http(); } } }
+            }
+            HorizontalBox {
+                height: 32px; padding: 0px; spacing: 6px;
+                ComboBox { width: 130px; height: 32px; model: ["Body", "Headers"]; current-index <=> root.http-request-view; }
+                Button { height: 32px; horizontal-stretch: 1; text: "Guardar"; icon: @image-url("assets/check.svg"); enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("save"); } }
+            }
+            if root.http-request-view == 0 : TextEdit { height: 100px; text <=> root.http-body; enabled: !root.http-busy && root.http-request-id != ""; }
+            if root.http-request-view == 1 : TextEdit { height: 100px; text <=> root.http-headers; enabled: !root.http-busy && root.http-request-id != ""; }
+            ComboBox { height: 28px; model: ["Respuesta", "Headers"]; current-index <=> root.http-response-view; }
+            Text { text: root.http-response-status; color: #b4aaff; font-size: 10px; overflow: elide; }
+            FileViewer { lines: root.http-response-lines; columns: root.http-response-columns; target-line: 0; }
+            Text { text: root.http-notice; color: #91a0bc; font-size: 10px; wrap: word-wrap; max-height: 48px; overflow: elide; }
+        }
+    }
+    if root.terminal-open || root.terminal-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.terminal-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                Text { text: "Terminal"; color: #e3e7f3; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                ComboBox { model: ["cmd", "PowerShell"]; current-index <=> root.terminal-shell-index; width: 130px; enabled: !root.terminal-running && !root.terminal-busy; }
+                IconButton { width: 32px; height: 32px; icon: root.terminal-running ? @image-url("assets/stop.svg") : @image-url("assets/play.svg"); label: root.terminal-running ? "Cerrar esta sesión de terminal" : "Iniciar terminal"; enabled: !root.terminal-busy; clicked => { if root.terminal-running { root.close-terminal(); } else { if root.terminal-rows.length > 0 { root.close-terminal(); } root.start-terminal(); } } }
+            }
+            terminal-surface := Rectangle {
+                background: #101822; clip: true; min-height: 80px; vertical-stretch: 1;
+                FocusScope {
+                    width: parent.width; height: parent.height;
+                    key-pressed(event) => { if root.terminal-running { root.terminal-key(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift); return accept; } return reject; }
+                    for row[index] in root.terminal-rows : Rectangle {
+                        x: 6px; y: 6px + index * 18px; height: 18px; width: parent.width - 12px;
+                        for run in row.runs : Rectangle {
+                            x: run.column * 7.2px; y: 0px; width: run.columns * 7.2px; height: 18px; background: run.bg;
+                            Text { x: 0px; y: 0px; width: parent.width; height: parent.height; text: run.text; color: run.fg; font-family: "Consolas"; font-size: 12px; font-weight: run.bold ? 700 : 400; vertical-alignment: center; }
+                        }
+                    }
+                    if root.terminal-cursor-visible : Rectangle { x: 6px + root.terminal-cursor-column * 7.2px; y: 6px + root.terminal-cursor-row * 18px; width: 2px; height: 17px; background: #c0b6ff; }
+                    terminal-touch := TouchArea {
+                        clicked => { parent.focus(); }
+                        scroll-event(event) => { root.terminal-scroll(event.delta-y > 0px ? 3 : -3); return accept; }
+                    }
+                }
+            }
+            Text { text: root.terminal-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 56px; overflow: elide; }
+        }
+    }
+
+    if root.lint-open || root.lint-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.lint-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                Text { text: "Problemas"; color: #e3e7f3; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                if root.lint-busy : Image { source: @image-url("assets/quota-spinner.svg"); width: 14px; height: 14px; transform-origin: { x: self.width / 2, y: self.height / 2 }; transform-rotation: 360deg * mod(animation-tick(), 900ms) / 900ms; }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/folder.svg"); label: "Ver logs del linter"; clicked => { root.open-lint-logs(); } }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/settings.svg"); label: "Configurar otro linter"; enabled: !root.lint-busy; clicked => { root.lint-config-open = !root.lint-config-open; } }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                ComboBox { model: root.lint-tools; current-index <=> root.lint-tool-index; enabled: !root.lint-busy; horizontal-stretch: 1; }
+                IconButton { width: 32px; height: 32px; icon: root.lint-busy ? @image-url("assets/stop.svg") : @image-url("assets/play.svg"); label: root.lint-busy ? "Cancelar linter" : "Ejecutar linter"; enabled: root.lint-busy || root.lint-tools.length > 0; clicked => { if root.lint-busy { root.stop-lint(); } else { root.run-lint(); } } }
+            }
+            if root.lint-config-open : VerticalBox {
+                padding: 0px; spacing: 6px;
+                LineEdit { text <=> root.lint-name; placeholder-text: "Nombre"; }
+                LineEdit { text <=> root.lint-program; placeholder-text: "Ejecutable (sin argumentos)"; }
+                LineEdit { text <=> root.lint-args; placeholder-text: "Argumentos como array JSON"; }
+                ComboBox { model: ["Texto archivo:línea:columna", "JSON del harness", "SARIF", "Checkstyle XML", "ESLint", "Clippy", "Ruff", "Android Lint XML", "PHPStan", "RuboCop", "SwiftLint", "Dart", "ShellCheck"]; current-index <=> root.lint-format-index; }
+                CheckBox { text: "Leer archivos en build/reports"; checked <=> root.lint-report-files; }
+                Text { text: root.lint-config-error; color: #efa3a3; wrap: word-wrap; }
+                Button { text: "Guardar linter del proyecto"; clicked => { root.save-lint-config(); } }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                LineEdit { text <=> root.lint-filter; placeholder-text: "Filtrar archivo, regla o mensaje"; horizontal-stretch: 1; }
+                ComboBox { model: ["Todos", "Errores", "Advertencias"]; current-index <=> root.lint-severity; width: 120px; }
+            }
+            ListView {
+                horizontal-scrollbar-policy: always-off;
+                for problem in root.lint-rows : Rectangle {
+                    height: 112px;
+                    Rectangle {
+                        x: 0px; y: 0px; width: parent.width; height: 106px; background: problem-touch.has-hover ? #263246 : #1b2735; border-radius: 6px;
+                        Rectangle { x: 0px; y: 7px; width: 3px; height: parent.height - 14px; background: problem.error ? #ef939f : #e3bd7b; border-radius: 2px; }
+                        Text { x: 10px; y: 6px; width: parent.width - 20px; height: 19px; text: (problem.error ? "Error" : "Advertencia") + (problem.code == "" ? "" : " · " + problem.code); color: problem.error ? #ef939f : #e3bd7b; font-size: 11px; overflow: elide; }
+                        Text { x: 10px; y: 27px; width: parent.width - 20px; height: 44px; text: problem.message; color: #dde3ef; font-size: 12px; wrap: word-wrap; overflow: elide; }
+                        Text { x: 10px; y: 78px; width: parent.width - 20px; height: 19px; text: problem.path + (problem.line > 0 ? ":" + problem.line + ":" + problem.column : ""); color: #91a0bc; font-size: 10px; overflow: elide; }
+                        problem-touch := TouchArea { enabled: problem.path != ""; clicked => { root.open-problem-file(problem.path, problem.line); } }
+                    }
+                }
+            }
+            Text { text: root.lint-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 90px; overflow: elide; }
+        }
+    }
+
+    if root.docker-open || root.docker-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.docker-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                Image { source: @image-url("assets/docker.svg"); width: 20px; height: 20px; }
+                Text { text: "Docker"; color: #e3e7f3; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                if root.docker-busy : Image { source: @image-url("assets/quota-spinner.svg"); width: 14px; height: 14px; transform-origin: { x: self.width / 2, y: self.height / 2 }; transform-rotation: 360deg * mod(animation-tick(), 900ms) / 900ms; }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/refresh.svg"); label: "Actualizar contenedores"; enabled: !root.docker-busy; clicked => { root.docker-logs-open = false; root.refresh-docker(); } }
+            }
+            if !root.docker-logs-open : Button { text: "Levantar servicios Compose"; enabled: root.docker-compose && !root.docker-busy; clicked => { root.docker-action("", "up"); } }
+            if !root.docker-logs-open : ListView {
+                horizontal-scrollbar-policy: always-off;
+                for container in root.docker-rows : Rectangle {
+                    height: 142px;
+                    Rectangle { x: 0px; y: 0px; height: 136px; width: parent.width; background: #1b2735; border-radius: 7px; }
+                    VerticalBox {
+                        x: 10px; y: 7px; width: parent.width - 20px; height: 122px; padding: 0px; spacing: 4px;
+                        Text { text: container.name; color: #e1e5f4; font-size: 13px; font-weight: 600; overflow: elide; }
+                        Text { text: container.detail; color: #91a0bc; font-size: 11px; wrap: word-wrap; overflow: elide; }
+                        Text { text: container.status; color: container.running ? #77c595 : #b9afd8; font-size: 11px; }
+                        HorizontalBox {
+                            padding: 0px; spacing: 5px; height: 30px;
+                            IconButton { width: 30px; height: 30px; icon: @image-url("assets/play.svg"); label: "Iniciar contenedor"; enabled: !root.docker-busy && !container.running && !container.paused; clicked => { root.docker-action(container.id, "start"); } }
+                            IconButton { width: 30px; height: 30px; icon: @image-url("assets/stop.svg"); label: "Detener contenedor"; enabled: !root.docker-busy && container.running; clicked => { root.docker-action(container.id, "stop"); } }
+                            IconButton { width: 30px; height: 30px; icon: @image-url("assets/refresh.svg"); label: "Reiniciar contenedor"; enabled: !root.docker-busy && !container.paused; clicked => { root.docker-action(container.id, "restart"); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            IconButton { width: 30px; height: 30px; icon: @image-url("assets/logcat.svg"); label: "Ver logs del contenedor"; enabled: !root.docker-busy; clicked => { root.docker-action(container.id, "logs"); } }
+                        }
+                    }
+                }
+            }
+            if root.docker-logs-open : HorizontalBox {
+                padding: 0px; spacing: 6px; height: 30px;
+                IconButton { width: 30px; height: 30px; icon: @image-url("assets/chevron-left.svg"); label: "Volver a contenedores"; clicked => { root.docker-logs-open = false; } }
+                Text { text: root.docker-log-title; color: #b8b0ef; font-size: 11px; horizontal-stretch: 1; overflow: elide; }
+            }
+            if root.docker-logs-open : docker-log-scroll := ScrollView {
+                content-width: max(self.visible-width, 1400px);
+                ListView {
+                    width: docker-log-scroll.content-width; height: docker-log-scroll.visible-height;
+                    horizontal-scrollbar-policy: always-off;
+                    for line in root.docker-logs : Text { text: line.text; color: #c8d1e1; font-family: "Consolas"; font-size: 11px; height: 19px; overflow: elide; }
+                }
+            }
+            Text { max-height: 92px; overflow: elide; text: root.docker-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+
+    if root.database-open || root.database-progress > 0 : Rectangle {
+        x: root.width - self.width - 14px + (1 - root.database-progress) * (self.width + 14px);
+        y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                Image { source: @image-url("assets/database.svg"); width: 20px; height: 20px; }
+                Text { text: "Base de datos"; color: #e3e7f3; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                if root.database-busy : Image {
+                    source: @image-url("assets/quota-spinner.svg"); width: 14px; height: 14px;
+                    transform-origin: { x: self.width / 2, y: self.height / 2 };
+                    transform-rotation: 360deg * mod(animation-tick(), 900ms) / 900ms;
+                }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/refresh.svg"); label: "Actualizar diagrama"; enabled: !root.database-busy; clicked => { root.refresh-database(true); } }
+            }
+            if root.database-schemas.length > 1 : ComboBox {
+                model: root.database-schemas; current-index <=> root.database-schema-index; enabled: !root.database-busy;
+                selected => { root.database-schema = root.database-schemas[self.current-index]; root.refresh-database(false); }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 6px; height: 32px;
+                LineEdit { enabled: !root.database-busy; text <=> root.database-schema; placeholder-text: "Archivo .prisma o carpeta"; horizontal-stretch: 1; accepted => { root.refresh-database(false); } }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/folder.svg"); label: "Buscar esquema Prisma"; enabled: !root.database-busy; clicked => { root.browse-database-schema(); } }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 4px; height: 28px;
+                Button { text: "Diagrama"; enabled: root.database-relations-view; clicked => { root.database-relations-view = false; } }
+                Button { text: "Relaciones"; enabled: !root.database-relations-view; clicked => { root.database-relations-view = true; } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if !root.database-relations-view : database-scroll := ScrollView {
+                content-width: max(self.visible-width, root.database-width * root.database-zoom * 1px);
+                content-height: max(self.visible-height, root.database-height * root.database-zoom * 1px);
+                Rectangle {
+                    width: database-scroll.content-width; height: database-scroll.content-height; background: #101822;
+                    for edge in root.database-relations : Rectangle {
+                        // Three orthogonal segments remain vector geometry at any zoom.
+                        x: min(edge.x1, edge.mid) * root.database-zoom * 1px; y: edge.y1 * root.database-zoom * 1px;
+                        width: max(2px, abs(edge.mid - edge.x1) * root.database-zoom * 1px); height: 1px; background: #8075c1;
+                        Rectangle {
+                            x: (edge.mid - min(edge.x1, edge.mid)) * root.database-zoom * 1px;
+                            y: (min(edge.y1, edge.y2) - edge.y1) * root.database-zoom * 1px;
+                            width: 1px; height: max(1px, abs(edge.y2 - edge.y1) * root.database-zoom * 1px); background: #8075c1;
+                        }
+                        Rectangle {
+                            x: (min(edge.mid, edge.x2) - min(edge.x1, edge.mid)) * root.database-zoom * 1px;
+                            y: (edge.y2 - edge.y1) * root.database-zoom * 1px;
+                            width: max(2px, abs(edge.x2 - edge.mid) * root.database-zoom * 1px); height: 1px; background: #8075c1;
+                        }
+                        Rectangle { x: (edge.x1 - min(edge.x1, edge.mid)) * root.database-zoom * 1px - 2px; y: -2px; width: 5px; height: 5px; border-radius: 3px; background: #aaa2ff; }
+                        Rectangle { x: (edge.x2 - min(edge.x1, edge.mid)) * root.database-zoom * 1px - 2px; y: (edge.y2 - edge.y1) * root.database-zoom * 1px - 2px; width: 5px; height: 5px; border-radius: 3px; background: #aaa2ff; }
+                    }
+                    for entity in root.database-entities : Rectangle {
+                        x: entity.x * root.database-zoom * 1px; y: entity.y * root.database-zoom * 1px;
+                        width: 260px * root.database-zoom; height: entity.height * root.database-zoom * 1px;
+                        private property <bool> in-view: self.x + self.width >= -database-scroll.content-x && self.x <= -database-scroll.content-x + database-scroll.visible-width && self.y + self.height >= -database-scroll.content-y && self.y <= -database-scroll.content-y + database-scroll.visible-height;
+                        if self.in-view : Rectangle {
+                            x: 0px; y: 0px; width: parent.width; height: parent.height;
+                            background: #1c2836; border-color: #45536a; border-width: 1px; border-radius: 5px;
+                            Rectangle { x: 0px; y: 0px; height: 40px * root.database-zoom; width: parent.width; background: #303353; border-radius: 5px; }
+                            Text { x: 9px * root.database-zoom; y: 3px * root.database-zoom; width: parent.width - 18px * root.database-zoom; height: 20px * root.database-zoom; text: entity.name; color: #e9e4ff; font-size: 13px * root.database-zoom; font-weight: 600; overflow: elide; }
+                            Text { x: 9px * root.database-zoom; y: 23px * root.database-zoom; width: parent.width - 18px * root.database-zoom; height: 14px * root.database-zoom; text: entity.detail; color: #aaa2c5; font-size: 10px * root.database-zoom; overflow: elide; }
+                            for field[index] in entity.fields : Rectangle {
+                                y: (40px + index * 22px) * root.database-zoom; height: 22px * root.database-zoom; width: parent.width;
+                                private property <bool> field-visible: (entity.y + 40 + index * 22) * root.database-zoom * 1px + self.height >= -database-scroll.content-y && (entity.y + 40 + index * 22) * root.database-zoom * 1px <= -database-scroll.content-y + database-scroll.visible-height;
+                                if self.field-visible : HorizontalBox {
+                                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                                    padding-left: 8px * root.database-zoom; padding-right: 8px * root.database-zoom; padding-top: 0px; padding-bottom: 0px; spacing: 4px * root.database-zoom;
+                                    Text { text: field.name; color: field.key ? #e9bf80 : #dfe4f3; font-size: 11px * root.database-zoom; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                                    Text { text: field.kind; color: #9db0c6; font-size: 10px * root.database-zoom; overflow: elide; max-width: 100px * root.database-zoom; }
+                                    Text { text: field.tags; color: #b9afff; font-size: 9px * root.database-zoom; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.database-relations-view : ListView {
+                horizontal-scrollbar-policy: always-off;
+                for relation in root.database-relations : Rectangle {
+                    height: 76px;
+                    Rectangle { height: 70px; width: parent.width; background: #192534; border-radius: 6px; }
+                    Text { x: 9px; y: 7px; width: parent.width - 18px; height: 30px; text: relation.label; color: #c6bcff; font-size: 11px; wrap: word-wrap; }
+                    Text { x: 9px; y: 38px; width: parent.width - 18px; height: 28px; text: relation.detail; color: #9db0c6; font-size: 10px; wrap: word-wrap; }
+                }
+            }
+            HorizontalBox {
+                padding: 0px; spacing: 4px; height: 28px;
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Alejar diagrama"; enabled: root.database-zoom > 0.4; clicked => { root.database-zoom = max(0.4, root.database-zoom - 0.1); } }
+                Text { text: round(root.database-zoom * 100) + "%"; color: #aebbd0; font-size: 11px; horizontal-stretch: 1; horizontal-alignment: center; }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Acercar diagrama"; enabled: root.database-zoom < 1.6; clicked => { root.database-zoom = min(1.6, root.database-zoom + 0.1); } }
+            }
+            Text { max-height: 92px; overflow: elide; text: root.database-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+
+    if root.projects-compact && root.projects-hover-title != "" : Rectangle {
+        x: 94px; y: clamp(root.projects-hover-y, 58px, root.height - 42px);
+        width: min(300px, tooltip-text.preferred-width + 24px); height: 34px;
+        background: #253448; border-color: #6260d7; border-width: 1px; border-radius: 6px;
+        tooltip-text := Text { x: 12px; width: parent.width - 24px; height: parent.height; text: root.projects-hover-title; color: #e3e7f3; font-size: 12px; overflow: elide; vertical-alignment: center; }
+    }
+    if !root.projects-compact : Rectangle {
+        x: root.projects-width + 15px; y: 58px;
+        width: 10px; height: root.height - 72px;
+        Rectangle { x: 4px; y: 12px; width: 2px; height: parent.height - 24px; border-radius: 1px; background: projects-resize.has-hover || root.projects-dragging ? #7970ff : #384561; }
+        projects-resize := TouchArea {
+            private property <length> start-x;
+            private property <length> start-width;
+            mouse-cursor: ew-resize;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    self.start-x = parent.x + self.mouse-x;
+                    self.start-width = root.projects-width;
+                    root.projects-dragging = true;
+                } else if event.kind == PointerEventKind.up { root.projects-dragging = false; }
+            }
+            changed pressed => { if !self.pressed { root.projects-dragging = false; } }
+            moved => {
+                if self.pressed {
+                    root.projects-panel-width = clamp(self.start-width + parent.x + self.mouse-x - self.start-x, 260px, root.projects-max-width);
+                }
+            }
+        }
+    }
+
+    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open : Rectangle {
+        x: root.width - root.panel-width - 19px; y: 58px;
+        width: 10px; height: root.height - 72px;
+        Rectangle { x: 4px; y: 12px; width: 2px; height: parent.height - 24px; border-radius: 1px; background: panel-resize.has-hover || root.panel-dragging ? #7970ff : #384561; }
+        panel-resize := TouchArea {
+            private property <length> start-x;
+            private property <length> start-width;
+            mouse-cursor: ew-resize;
+            enabled: max(root.http-progress, max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    self.start-x = parent.x + self.mouse-x;
+                    self.start-width = root.panel-width;
+                    root.panel-dragging = true;
+                } else if event.kind == PointerEventKind.up { root.panel-dragging = false; }
+            }
+            changed pressed => { if !self.pressed { root.panel-dragging = false; } }
+            moved => {
+                if self.pressed {
+                    root.side-panel-width = clamp(self.start-width + self.start-x - (parent.x + self.mouse-x), 280px, root.panel-max-width);
+                }
+            }
+        }
+    }
+
+    if root.task-dialog-open : Rectangle {
+        width: root.width; height: root.height; background: #080d18.with-alpha(0.87);
+        TouchArea { }
+        Rectangle {
+            width: min(640px, root.width - 40px); height: min(640px, root.height - 40px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #192534; border-radius: 12px; border-width: 1px; border-color: #6260d7;
+            VerticalBox {
+                padding: 20px; spacing: 10px;
+                Text { text: root.task-edit-id == "" ? "Nueva tarea" : "Editar tarea"; color: #f0f2fa; font-size: 22px; height: 30px; }
+                ScrollView {
+                    content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+                    VerticalBox {
+                        padding: 0px; spacing: 8px;
+                        Text { text: "Título"; color: #91a0bc; font-size: 12px; height: 18px; }
+                        LineEdit { text <=> root.task-title; placeholder-text: "Título de la tarea"; height: 32px; }
+                        Text { text: "Objetivo"; color: #91a0bc; font-size: 12px; height: 18px; }
+                        TextEdit { text <=> root.task-objective; placeholder-text: "¿Qué queremos lograr?"; height: 110px; font-size: 13px; }
+                        Text { text: "Criterio de aceptación"; color: #91a0bc; font-size: 12px; height: 18px; }
+                        TextEdit { text <=> root.task-acceptance; placeholder-text: "¿Cómo verificamos que está realizada?"; height: 110px; font-size: 13px; }
+                        HorizontalBox {
+                            padding: 0px; spacing: 12px; height: 58px;
+                            VerticalBox {
+                                padding: 0px; spacing: 8px; horizontal-stretch: 1;
+                                Text { text: "Severidad"; color: #91a0bc; font-size: 12px; height: 18px; }
+                                ComboBox { model: ["Baja", "Media", "Alta", "Crítica"]; current-index <=> root.task-severity; height: 32px; min-width: 0px; max-width: 100000px; }
+                            }
+                            VerticalBox {
+                                padding: 0px; spacing: 8px; horizontal-stretch: 1;
+                                Text { text: "Columna"; color: #91a0bc; font-size: 12px; height: 18px; }
+                                ComboBox { model: ["Por hacer", "En progreso", "Realizadas"]; current-index <=> root.task-status; height: 32px; min-width: 0px; max-width: 100000px; }
+                            }
+                        }
+                        if root.task-edit-id != "" : Text { text: root.task-token-detail; color: #91a0bc; font-size: 12px; wrap: word-wrap; }
+                        if root.task-error != "" : Text { text: root.task-error; color: #ed9696; font-size: 12px; wrap: word-wrap; }
+                    }
+                }
+                HorizontalBox {
+                    padding: 0px; spacing: 8px; height: 32px;
+                    Button { text: "Cancelar"; clicked => { root.task-dialog-open = false; } }
+                    Button { text: "Guardar"; enabled: root.task-title != "" && root.task-objective != "" && root.task-acceptance != ""; clicked => { root.save-task(); } }
+                }
+            }
+        }
+    }
+
+    if root.http-open && root.http-variables-open : Rectangle {
+        width: root.width; height: root.height; background: #080d18.with-alpha(0.87);
+        TouchArea { }
+        Rectangle {
+            width: min(580px, root.width - 40px); height: min(440px, root.height - 40px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #192534; border-radius: 12px; border-width: 1px; border-color: #6260d7;
+            VerticalBox {
+                padding: 24px; spacing: 12px;
+                Text { text: "Variables HTTP del proyecto"; color: #e3e7f3; font-size: 20px; }
+                Text { text: "Objeto JSON con valores de texto. Usá {{NOMBRE}} en URL, headers o body. Los valores se guardan fuera del repositorio y no se exponen a los agentes."; color: #91a0bc; font-size: 12px; wrap: word-wrap; }
+                TextEdit { text <=> root.http-variables-json; }
+                Text { text: root.http-notice; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+                HorizontalBox { padding: 0px; spacing: 8px;
+                    Button { text: "Cancelar"; clicked => { root.http-variables-open = false; } }
+                    Button { text: "Guardar variables"; clicked => { root.http-action("save-variables"); } }
+                }
+            }
+        }
+    }
+    if root.git-settings-open : Rectangle {
+        width: root.width; height: root.height; background: #080d18.with-alpha(0.87);
+        TouchArea { }
+        Rectangle {
+            width: min(520px, root.width - 40px); height: root.git-action-message == "" ? 420px : 492px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #192534; border-radius: 12px; border-width: 1px; border-color: #6260d7;
+            VerticalBox {
+                padding: 24px; spacing: 12px;
+                Text { text: "Configuración de Git"; color: #f0f2fa; font-size: 22px; }
+                Text { text: "Nombre para los commits (user.name)"; color: #91a0bc; font-size: 12px; }
+                LineEdit { text <=> root.git-user-name; placeholder-text: "Nombre del autor"; enabled: !root.git-busy; }
+                Text { text: "Email para los commits (user.email)"; color: #91a0bc; font-size: 12px; }
+                LineEdit { text <=> root.git-user-email; placeholder-text: "nombre@ejemplo.com"; enabled: !root.git-busy; }
+                Text { text: "Se leen los valores efectivos de Git. Los cambios se guardan solo en este repositorio. Los campos vacíos conservan su configuración."; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+                Text { text: "URL de origin"; color: #91a0bc; font-size: 12px; }
+                LineEdit { text <=> root.git-remote-url; placeholder-text: "Opcional: https://… o git@…"; enabled: !root.git-busy; }
+                if root.git-action-message != "" : ScrollView {
+                    height: 72px; content-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+                    Text { text: root.git-action-message; color: #dfe4f3; wrap: word-wrap; font-size: 11px; }
+                }
+                HorizontalBox {
+                    padding: 0px; spacing: 8px;
+                    Button { text: "Cancelar"; enabled: !root.git-busy; clicked => { root.git-settings-open = false; } }
+                    Button { text: "Guardar"; enabled: !root.git-busy && (root.git-user-name != "" || root.git-user-email != "" || root.git-remote-url != ""); clicked => { root.git-action("settings", ""); } }
+                }
+            }
+        }
+    }
+
+    if root.project-dialog || root.project-progress > 0 : Rectangle {
+        background: #080d18.with-alpha(root.project-progress * 0.87);
+        TouchArea { }
+        Rectangle {
+            width: 520px;
+            height: 290px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 + (1 - root.project-progress) * 8px;
+            background: #192534;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: #6260d7;
+            VerticalBox {
+                padding: 24px;
+                spacing: 12px;
+                Text { text: "Abrir proyecto"; color: #f0f2fa; font-size: 22px; }
+                LineEdit { placeholder-text: "Nombre del proyecto"; text <=> root.project-name; }
+                HorizontalBox {
+                    padding: 0px;
+                    spacing: 8px;
+                    LineEdit { placeholder-text: "Ruta de la carpeta"; text <=> root.new-path; horizontal-stretch: 1; }
+                    Button {
+                        text: "Buscar carpeta…";
+                        enabled: !root.folder-picker-open;
+                        clicked => { root.browse-folder(); }
+                    }
+                }
+                Text { text: "Usamos el directorio existente. No se modifican sus archivos."; color: #91a0bc; wrap: word-wrap; font-size: 12px; }
+                HorizontalBox {
+                    Button { text: "Cancelar"; enabled: !root.folder-picker-open; clicked => { root.project-dialog = false; } }
+                    Button { text: "Abrir"; enabled: !root.folder-picker-open && root.project-name != "" && root.new-path != ""; clicked => { root.add-project(root.project-name, root.new-path); root.project-dialog = false; } }
+                }
+            }
+        }
+    }
+
+    if root.settings-open || root.settings-progress > 0 : Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #080d18.with-alpha(root.settings-progress * 0.87);
+        TouchArea { }
+        Rectangle {
+            width: min(820px, root.width - 40px);
+            height: min(660px, root.height - 40px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 + (1 - root.settings-progress) * 8px;
+            background: #192534;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: #6260d7;
+            VerticalBox {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: "Proveedores de agentes"; color: #f0f2fa; font-size: 22px; }
+                ScrollView {
+                    content-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalBox {
+                        padding: 0px;
+                        spacing: 12px;
+                        AgentConfig {
+                            name: "Codex";
+                            direct: true;
+                            connected: root.codex-authenticated;
+                            models: root.codex-models;
+                            model-index <=> root.codex-model-index;
+                            pick-model(index) => { root.pick-codex-model(index); }
+                            disconnect => { root.disconnect-codex(); }
+                            enabled <=> root.codex-enabled;
+                            executable <=> root.codex-path;
+                            model <=> root.codex-model;
+                            concurrency <=> root.codex-concurrency;
+                            effort-index <=> root.codex-effort-index;
+                            status: root.codex-status;
+                            busy: root.settings-busy;
+                            detect => { root.detect-agent(0); }
+                            browse => { root.browse-agent(0); }
+                            check => { root.check-agent(0, false); }
+                            login => { root.check-agent(0, true); }
+                            path-edited => { root.invalidate-agent(0); }
+                        }
+                        AgentConfig {
+                            name: "Claude Code - Cliente oficial";
+                            pending: false;
+                            enabled <=> root.claude-enabled;
+                            executable <=> root.claude-path;
+                            model <=> root.claude-model;
+                            concurrency <=> root.claude-concurrency;
+                            status: root.claude-status;
+                            busy: root.settings-busy;
+                            detect => { root.detect-agent(1); }
+                            browse => { root.browse-agent(1); }
+                            check => { root.check-agent(1, false); }
+                            login => { root.check-agent(1, true); }
+                            path-edited => { root.invalidate-agent(1); }
+                        }
+                    }
+                }
+                Text { text: "Codex usa las herramientas del harness. Claude usa el cliente oficial y las herramientas del harness. Para limitar el consumo a tu plan, desactivá el uso de créditos para esta aplicación en ChatGPT Settings → Usage."; color: #c5badf; wrap: word-wrap; font-size: 12px; }
+                Text { text: root.settings-notice; color: #a6b4cb; wrap: word-wrap; font-size: 12px; }
+                HorizontalBox {
+                    padding: 0px;
+                    spacing: 8px;
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.settings-busy : Button { text: "Cancelar conexión"; clicked => { root.cancel-auth(); } }
+                    Button { text: "Cancelar"; enabled: !root.settings-busy; clicked => { root.close-settings(); } }
+                    Button { text: "Guardar configuración"; enabled: !root.settings-busy; clicked => { root.save-settings(); } }
+                }
+            }
+        }
+    }
+}
