@@ -39,6 +39,25 @@ pub const REASONING_EFFORTS: &[&str] = &[
     "", "none", "minimal", "low", "medium", "high", "xhigh", "max",
 ];
 
+pub fn codex_efforts(model: &str) -> &'static [&'static str] {
+    if model.starts_with("gpt-6.1-sol") || model.starts_with("gpt-6-astra") {
+        &["", "low", "medium", "high", "xhigh", "max"]
+    } else if model.starts_with("gpt-6-sol") || model.starts_with("gpt-6-luna") {
+        &["", "none", "low", "medium", "high", "xhigh", "max"]
+    } else {
+        REASONING_EFFORTS
+    }
+}
+
+/// Migrate saved legacy efforts before sending the first request; never retry it.
+pub fn codex_effort<'a>(model: &str, effort: &'a str) -> &'a str {
+    if !codex_efforts(model).contains(&effort) && matches!(effort, "minimal" | "none") {
+        "low"
+    } else {
+        effort
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {

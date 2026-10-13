@@ -3,7 +3,7 @@ use crate::domain::{Provider, TokenUsage, UsageRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashSet},
     fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -32,6 +32,12 @@ pub struct Call {
     pub result_reference: String,
     pub inspected_reference: String,
     pub process: String,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub stream: String,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Group {
@@ -64,6 +70,20 @@ pub struct Report {
     pub invalid_lines: usize,
     pub missing_chats: usize,
     pub legacy_calls: usize,
+    #[serde(default)]
+    pub discovered_files: usize,
+    #[serde(default)]
+    pub repeated_reads: usize,
+    #[serde(default)]
+    pub inspected_calls: usize,
+    #[serde(default)]
+    pub read_reply_bytes: u64,
+    #[serde(default)]
+    pub earliest_timestamp_ms: Option<u64>,
+    #[serde(default)]
+    pub latest_timestamp_ms: Option<u64>,
+    #[serde(default)]
+    pub truncation_reasons: Vec<String>,
 }
 fn limited(value: &str) -> String {
     value
@@ -160,6 +180,9 @@ fn call(chat: u64, title: &str, run: &str, line: u64, event: &Value) -> Option<C
         result_reference: limited(m["result_reference"].as_str().unwrap_or("")),
         inspected_reference: limited(d["arguments"]["reference"].as_str().unwrap_or("")),
         process: String::new(),
+        offset: d["arguments"]["offset"].as_u64(),
+        limit: d["arguments"]["limit"].as_u64(),
+        stream: limited(d["arguments"]["stream"].as_str().unwrap_or("")),
     })
 }
 fn regular(path: &Path, directory: bool) -> bool {
@@ -178,8 +201,8 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
         report.missing_chats = chats.len();
         return report;
     }
-    let mut files = Vec::new();
-    'chats: for (id, title) in chats {
+    let mut files = BinaryHeap::new();
+    for (id, title) in chats {
         let directory = logs.join(id.to_string());
         if !regular(&directory, true) {
             report.missing_chats += 1;
@@ -189,11 +212,7 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
             report.partial = true;
             continue;
         };
-        for entry in entries.take(MAX_FILES + 1).flatten() {
-            if files.len() >= MAX_FILES {
-                report.partial = true;
-                break 'chats;
-            }
+        for entry in entries.flatten() {
             let path = entry.path();
             if !regular(&path, true) {
                 continue;
@@ -202,19 +221,36 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
             if !regular(&file, false) {
                 continue;
             }
-            files.push((
+            report.discovered_files += 1;
+            files.push(std::cmp::Reverse((
                 fs::metadata(&file).and_then(|m| m.modified()).ok(),
                 file,
                 *id,
                 title.clone(),
-            ));
+            )));
+            if files.len() > MAX_FILES {
+                files.pop();
+                report.partial = true;
+            }
         }
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    if report.discovered_files > MAX_FILES {
+        report.truncation_reasons.push("file_limit".into());
+    }
+    let mut files = files.into_iter().map(|v| v.0).collect::<Vec<_>>();
+    files.sort_by(|a, b| b.cmp(a));
     let mut bytes = 0usize;
     'files: for (_, file, chat, title) in files {
         if bytes >= MAX_BYTES || report.calls.len() >= MAX_CALLS {
             report.partial = true;
+            report.truncation_reasons.push(
+                if bytes >= MAX_BYTES {
+                    "byte_limit"
+                } else {
+                    "call_limit"
+                }
+                .into(),
+            );
             break;
         }
         let run = file
@@ -235,6 +271,7 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
             let remaining = MAX_BYTES.saturating_sub(bytes).min(MAX_LINE as usize) as u64;
             if remaining == 0 {
                 report.partial = true;
+                report.truncation_reasons.push("byte_limit".into());
                 break 'files;
             }
             let result = reader
@@ -251,11 +288,20 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
             bytes += n;
             if n as u64 > remaining {
                 report.partial = true;
+                report.truncation_reasons.push(
+                    if remaining < MAX_LINE {
+                        "byte_limit"
+                    } else {
+                        "line_limit"
+                    }
+                    .into(),
+                );
                 break;
             }
             line_index += 1;
             if !line.ends_with(b"\n") {
                 report.partial = true;
+                report.truncation_reasons.push("unfinished_line".into());
                 break;
             } // Running/partial log, retry on refresh.
             let Ok(event) = serde_json::from_slice::<Value>(&line) else {
@@ -267,6 +313,7 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
                 report.calls.push(call);
                 if report.calls.len() >= MAX_CALLS {
                     report.partial = true;
+                    report.truncation_reasons.push("call_limit".into());
                     break 'files;
                 }
             } else if event["event"] == "tool_finished" {
@@ -274,6 +321,41 @@ pub fn scan(data: &Path, chats: &[(u64, String)], samples: &[(u64, UsageRecord)]
             }
         }
     }
+    let mut reads = HashSet::new();
+    for c in &report.calls {
+        if c.timestamp_ms > 0 {
+            report.earliest_timestamp_ms = Some(
+                report
+                    .earliest_timestamp_ms
+                    .map_or(c.timestamp_ms, |t| t.min(c.timestamp_ms)),
+            );
+            report.latest_timestamp_ms = Some(
+                report
+                    .latest_timestamp_ms
+                    .map_or(c.timestamp_ms, |t| t.max(c.timestamp_ms)),
+            );
+        }
+        if c.tool == "inspect_result" {
+            report.inspected_calls += 1;
+        }
+        if c.tool == "read_file" || c.tool == "inspect_result" {
+            report.read_reply_bytes = report.read_reply_bytes.saturating_add(c.reply_bytes);
+            if let (Some(offset), Some(limit)) = (c.offset, c.limit) {
+                let target = if c.tool == "read_file" {
+                    &c.target
+                } else {
+                    &c.inspected_reference
+                };
+                if !target.is_empty()
+                    && !reads.insert((c.chat, &c.run, &c.tool, target, &c.stream, offset, limit))
+                {
+                    report.repeated_reads += 1;
+                }
+            }
+        }
+    }
+    report.truncation_reasons.sort();
+    report.truncation_reasons.dedup();
     let sources = report
         .calls
         .iter()
@@ -370,6 +452,63 @@ pub fn save(data: &Path, project: &str, scope: &str, report: &Report) -> std::io
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn newest_files_are_selected_globally_with_bounded_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        for i in 0..=MAX_FILES {
+            let dir = temp.path().join(format!(
+                "logs/{}/run-{i:04}",
+                if i == MAX_FILES { 2 } else { 1 }
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("events.jsonl");
+            let event = json!({"event":"tool_finished","timestamp_ms":i as u64 + 1,
+                "details":{"name":"read_file","reply_bytes":4,"arguments":{"path":"fixture"}}});
+            fs::write(&path, format!("{event}\n")).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs(1_700_000_000 + i as u64),
+                )
+                .unwrap();
+        }
+        let report = scan(temp.path(), &[(1, "Chat".into()), (2, "Newer".into())], &[]);
+        assert_eq!(report.discovered_files, MAX_FILES + 1);
+        assert_eq!(report.files, MAX_FILES);
+        assert!(report.partial);
+        assert_eq!(report.earliest_timestamp_ms, Some(2));
+        assert_eq!(report.latest_timestamp_ms, Some(MAX_FILES as u64 + 1));
+        assert!(report.truncation_reasons.iter().any(|r| r == "file_limit"));
+    }
+    #[test]
+    fn repeated_reads_require_the_same_range_stream_and_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("logs/1/run");
+        fs::create_dir_all(&dir).unwrap();
+        let event = |offset, stream| {
+            json!({"event":"tool_finished","details":{
+            "name":"inspect_result","reply_bytes":4,
+            "arguments":{"reference":"ref","offset":offset,"limit":4,"stream":stream}}})
+        };
+        fs::write(
+            dir.join("events.jsonl"),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                event(0, "stdout"),
+                event(0, "stdout"),
+                event(4, "stdout"),
+                event(0, "stderr")
+            ),
+        )
+        .unwrap();
+        let report = scan(temp.path(), &[(1, "Chat".into())], &[]);
+        assert_eq!(report.repeated_reads, 1);
+        assert_eq!(report.inspected_calls, 4);
+        assert_eq!(report.read_reply_bytes, 16);
+    }
     #[test]
     fn ranks_payloads_keeps_unknowns_and_does_not_add_cache_again() {
         let temp = tempfile::tempdir().unwrap();

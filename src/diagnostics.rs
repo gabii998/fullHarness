@@ -12,6 +12,8 @@ pub struct Journal {
     file: fs::File,
     bytes: usize,
     started: Instant,
+    last_sync: Instant,
+    unsynced_bytes: usize,
     pub error: Option<String>,
 }
 const CAP: usize = 16 * 1024 * 1024;
@@ -33,6 +35,8 @@ impl Journal {
             file,
             bytes: 0,
             started: Instant::now(),
+            last_sync: Instant::now(),
+            unsynced_bytes: 0,
             error: None,
         })
     }
@@ -46,23 +50,41 @@ impl Journal {
             self.error = Some("Se alcanzó el límite de 16 MiB del log.".into());
             return;
         }
-        if self
-            .file
-            .write_all(line.as_bytes())
-            .and_then(|_| self.file.sync_data())
-            .is_err()
-        {
+        if self.file.write_all(line.as_bytes()).is_err() {
             self.error = Some("No se pudo guardar el log completo.".into());
         } else {
             self.bytes += line.len();
+            self.unsynced_bytes += line.len();
+            // Bound unsynced data, while keeping approvals and task boundaries durable.
+            if self.unsynced_bytes >= 64 * 1024
+                || self.last_sync.elapsed() >= std::time::Duration::from_secs(1)
+                || kind.contains("approval")
+                || kind == "run_finished"
+                || kind == "task_finished"
+                || kind.contains("failed")
+                || kind.contains("cancelled")
+            {
+                if self.file.sync_data().is_err() {
+                    self.error = Some("No se pudo sincronizar el log completo.".into());
+                } else {
+                    self.unsynced_bytes = 0;
+                    self.last_sync = Instant::now();
+                }
+            }
         }
     }
     pub fn tool_reply(&mut self, index: usize, reply: &str) -> Option<String> {
         if self.error.is_some() {
             return None;
         }
-        if reply.len() > 128 * 1024 || self.bytes + reply.len() > CAP {
-            self.error = Some("Se alcanzó el límite de tamaño de los logs.".into());
+        // Reserve one MiB for events; omitting a detail must not stop metrics.
+        if reply.len() > 128 * 1024 || self.bytes + reply.len() > CAP - 1024 * 1024 {
+            self.record(
+                "tool_detail_omitted",
+                json!({
+                    "index": index, "reply_bytes": reply.len(), "reason": "detail_size_limit"
+                }),
+            );
             return None;
         }
         let name = format!("tool-{index}.json");
@@ -72,6 +94,13 @@ impl Journal {
         }
         self.bytes += reply.len();
         Some(name)
+    }
+}
+
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // Best effort at shutdown; ordinary sync failures are reported by record().
+        let _ = self.file.sync_data();
     }
 }
 
@@ -126,6 +155,39 @@ pub fn argument_metrics(name: &str, arguments: &Value) -> Value {
             "stream":short(arguments["stream"].as_str().unwrap_or("")),"offset":arguments["offset"],"limit":arguments["limit"]})
         }
     }
+}
+
+/// UI-only detail. Keep the compact journal summary and model reply unchanged.
+/// Arguments are quoted as JSON strings when necessary to preserve boundaries;
+/// this is a display of argv, not a shell script.
+pub fn tool_display_summary(name: &str, arguments: &Value, summary: &str) -> String {
+    if name != "run_command" {
+        return summary.into();
+    }
+    let Some(program) = arguments["program"].as_str().filter(|s| !s.is_empty()) else {
+        return summary.into();
+    };
+    fn token(value: &str) -> String {
+        if !value.is_empty()
+            && value
+                .chars()
+                .all(|c| c.is_alphanumeric() || "-_=./:".contains(c))
+        {
+            value.into()
+        } else {
+            serde_json::to_string(value).unwrap_or_default()
+        }
+    }
+    let mut command = token(program);
+    if let Some(args) = arguments["args"].as_array() {
+        for arg in args {
+            if let Some(arg) = arg.as_str() {
+                command.push(' ');
+                command.push_str(&token(arg));
+            }
+        }
+    }
+    format!("{summary}\n\nComando (programa y argumentos):\n{command}")
 }
 
 pub fn tool_summary(
@@ -231,6 +293,60 @@ pub fn tool_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_detail_preserves_arguments_without_changing_compact_summary() {
+        let args =
+            json!({"program":"cargo","args":["build","--offline","", "a b", "a\"b", "line\nnext"]});
+        let summary = tool_summary(
+            "run_command",
+            &args,
+            r#"{"ok":true,"ref":"private-ref"}"#,
+            Some(12),
+        );
+        let display = tool_display_summary("run_command", &args, &summary);
+        assert!(display.starts_with(&format!("{summary}\n\n")));
+        assert!(display.contains("cargo build --offline \"\" \"a b\" \"a\\\"b\" \"line\\nnext\""));
+        assert!(!summary.contains("--offline"));
+        assert!(!display.contains("private-ref"));
+        assert_eq!(tool_display_summary("read_file", &args, &summary), summary);
+        assert_eq!(
+            tool_display_summary("run_command", &Value::Null, "old"),
+            "old"
+        );
+        let long = "x".repeat(300);
+        assert!(
+            tool_display_summary(
+                "run_command",
+                &json!({"program":"echo","args":[long]}),
+                "ok"
+            )
+            .contains(&long)
+        );
+    }
+    #[test]
+    fn detail_budget_preserves_event_space_and_sync_is_batched() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut journal = Journal::new(temp.path(), 1).unwrap();
+        journal.bytes = CAP - 1024 * 1024;
+        assert!(journal.tool_reply(0, "detail").is_none());
+        assert!(journal.error.is_none());
+        journal.record("tool_finished", json!({"ok": true}));
+        assert!(journal.unsynced_bytes > 0);
+        journal.record("approval_requested", json!({}));
+        assert_eq!(journal.unsynced_bytes, 0);
+    }
+    #[test]
+    fn oversized_detail_does_not_stop_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut journal = Journal::new(temp.path(), 1).unwrap();
+        assert!(journal.tool_reply(0, &"x".repeat(128 * 1024 + 1)).is_none());
+        assert!(journal.error.is_none());
+        journal.record("task_finished", json!({"ok": true}));
+        let text = fs::read_to_string(journal.directory.join("events.jsonl")).unwrap();
+        assert!(text.contains("tool_detail_omitted"));
+        assert!(text.contains("task_finished"));
+        assert_eq!(journal.unsynced_bytes, 0);
+    }
     #[test]
     fn summaries_hide_content_and_refs_and_logs_preserve_bounded_details() {
         let args = json!({"path":"src/main.rs","content":"secret fixture"});

@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-18"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-18", "unstable-winit-030"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 roxmltree = "0.21"
@@ -39,3 +39,11 @@ i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"
 # Windows software rendering must present cached pixels on native expose events.
 [patch.crates-io]
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
+
+# The desktop UI is used interactively in debug too. Optimize generated Slint code
+# and its renderer without disabling debug assertions or changing scroll behavior.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

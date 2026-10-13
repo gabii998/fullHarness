@@ -5,7 +5,7 @@ use ascurra_harness::{
     settings::{self, AgentSettings},
     storage::Store,
 };
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
     cell::RefCell,
     path::PathBuf,
@@ -18,6 +18,9 @@ mod attachments_ui;
 mod captures_ui;
 mod docker_ui;
 mod explorer_ui;
+mod search_ui;
+mod window_ui;
+mod scroll_profile;
 mod git_ui;
 mod http_ui;
 mod lint_ui;
@@ -90,7 +93,7 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .is_some_and(|c| c.messages.is_empty())
             && !agents.is_empty(),
     );
-    let efforts = provider_efforts(selected_provider);
+    let efforts = chat_efforts(state, selected_provider);
     let effort_labels = efforts
         .iter()
         .map(|e| slint::SharedString::from(if e.is_empty() { "Effort: auto" } else { e }))
@@ -228,6 +231,7 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .unwrap_or_default(),
     )));
     ui.set_git_project(project.map(|p| p.path.as_str()).unwrap_or("").into());
+    ui.set_title_project_path(window_ui::display_path(project.map(|p| p.path.as_str()).unwrap_or("" )).into());
     let choices = chat_models(state);
     let model = selected
         .filter(|chat| !chat.model.is_empty())
@@ -249,6 +253,11 @@ fn refresh(ui: &AppWindow, state: &AppState) {
     let effort = selected
         .and_then(|chat| chat.reasoning_effort.as_deref())
         .unwrap_or(&state.settings.agent(selected_provider).reasoning_effort);
+    let effort = if selected_provider == Provider::Codex {
+        settings::codex_effort(model, effort)
+    } else {
+        effort
+    };
     ui.set_chat_effort_index(
         efforts
             .iter()
@@ -256,6 +265,9 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .unwrap_or(0) as i32,
     );
     ui.set_has_chat(selected.is_some());
+    ui.set_can_retry_message(selected.is_some_and(|chat| {
+        chat.state == RunState::Failed && chat.messages.iter().any(|m| m.role == "Vos")
+    }));
     let (context_label, context_fraction) = context_meter(selected, model, &choices);
     ui.set_context_summary(context_label.into());
     ui.set_context_fraction(context_fraction);
@@ -264,6 +276,8 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .is_some_and(|c| matches!(c.state, RunState::Running | RunState::WaitingForPermission)),
     );
     ui.set_approval_description(selected.map(|c| c.approval.as_str()).unwrap_or("").into());
+    ui.set_auto_approve_enabled(state.selected_chat.is_some_and(|id|
+        ui.get_auto_approve_chats().iter().any(|value| value.as_str() == id.to_string())));
     ui.set_token_summary(
         selected
             .map(token_summary)
@@ -280,7 +294,12 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .unwrap();
         let display_path = project.path.strip_prefix(r"\\?\").unwrap_or(&project.path);
         ui.set_project_path(format!("{}  ›  {}", project.name, display_path).into());
-        if !chat.last_status.is_empty() {
+        if matches!(chat.state, RunState::Running)
+            && (chat.last_status.starts_with("Codex conectado directamente")
+                || chat.last_status == "Acción aprobada automáticamente para este chat.")
+        {
+            ui.set_notice("".into());
+        } else if !chat.last_status.is_empty() {
             ui.set_notice(chat.last_status.clone().into());
         }
     } else {
@@ -288,6 +307,7 @@ fn refresh(ui: &AppWindow, state: &AppState) {
         ui.set_chat_title("Tu espacio de trabajo".into());
         ui.set_project_path("Abrí un proyecto para empezar".into());
     }
+    follow_chat_update(ui);
     let cached_messages = ui.get_messages().iter().collect::<Vec<_>>();
     let messages = selected
         .map(|chat| {
@@ -322,7 +342,7 @@ fn refresh(ui: &AppWindow, state: &AppState) {
                     MessageRow {
                         blocks,
                         role: role.into(),
-                        body: body.into(),
+                        summary: body.lines().next().unwrap_or_default().into(), body: body.into(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -336,6 +356,12 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             rows.remove(rows.row_count() - 1);
         }
         for (index, row) in messages.into_iter().enumerate() {
+            let is_current_chat = state.selected_chat.is_some_and(|id| ui.get_displayed_chat_key().as_str() == id.to_string());
+            if is_current_chat && !row.body.is_empty()
+                && cached_messages.get(index).is_none_or(|old| old.body.is_empty())
+            {
+                animate_chat_entry(ui, index);
+            }
             if index >= rows.row_count() {
                 rows.push(row);
             } else if cached_messages
@@ -348,8 +374,80 @@ fn refresh(ui: &AppWindow, state: &AppState) {
     } else {
         ui.set_messages(ModelRc::new(VecModel::from(messages)));
     }
+    let key = state.selected_chat.map(|id| id.to_string()).unwrap_or_default();
+    if ui.get_displayed_chat_key().as_str() != key {
+        ui.set_chat_entry_animate(false);
+        ui.set_chat_entry_progress(1.0);
+        ui.set_chat_entry_index(-1);
+        ui.set_displayed_chat_key(key.into());
+        scroll_opened_chat(ui);
+    }}
+
+// Capture proximity before changing rows, including the final (non-running) message.
+fn follow_chat_update(ui: &AppWindow) {
+    if !ui.get_has_chat() || !ui.get_chat_content_visible() || ui.get_chat_follow_pending()
+        || (ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() > 80.0
+    { return; }
+    start_chat_scroll(ui, false);
 }
 
+fn start_chat_scroll(ui: &AppWindow, opening: bool) {
+    let generation = ui.get_chat_scroll_generation().wrapping_add(1);
+    ui.set_chat_scroll_generation(generation);
+    ui.set_chat_opening_scroll(opening);
+    ui.set_chat_follow_pending(true);
+    settle_chat_scroll(ui.as_weak(), ui.get_displayed_chat_key(), generation, 0, 0, f32::NAN);
+}
+
+// A virtualized list discovers row heights over several layout passes. Keep
+// following the actual bottom until it settles; never mutate scroll from layout.
+fn settle_chat_scroll(
+    weak: slint::Weak<AppWindow>, key: slint::SharedString, generation: i32,
+    passes: u32, stable: u32, previous_bottom: f32,
+) {
+    slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+        let Some(ui) = weak.upgrade() else { return; };
+        // A timer from a previous tab must not clear a newer tab's pending state.
+        if ui.get_chat_scroll_generation() != generation { return; }
+        if ui.get_displayed_chat_key() != key || !ui.get_has_chat() || !ui.get_chat_content_visible() {
+            ui.set_chat_follow_pending(false);
+            ui.set_chat_opening_scroll(false);
+            return;
+        }
+        let bottom = ui.get_chat_scroll_bottom();
+        let stable = if (bottom - previous_bottom).abs() < 0.5
+            && (ui.get_chat_scroll_offset() - bottom).abs() < 1.0 { stable + 1 } else { 0 };
+        ui.invoke_scroll_chat_to_end();
+        if passes >= 59 || (passes >= 11 && stable >= 4) {
+            ui.set_chat_follow_pending(false);
+            ui.set_chat_opening_scroll(false);
+        } else {
+            settle_chat_scroll(weak, key, generation, passes + 1, stable, bottom);
+        }
+    });
+}
+
+fn animate_chat_entry(ui: &AppWindow, index: usize) {
+    let generation = ui.get_chat_entry_generation().wrapping_add(1);
+    ui.set_chat_entry_generation(generation);
+    ui.set_chat_entry_animate(false);
+    ui.set_chat_entry_progress(0.0);
+    ui.set_chat_entry_index(index.min(i32::MAX as usize) as i32);
+    let key = ui.get_displayed_chat_key();
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_chat_entry_generation() == generation && ui.get_displayed_chat_key() == key {
+                ui.set_chat_entry_animate(true);
+                ui.set_chat_entry_progress(1.0);
+            }
+        }
+    });
+}
+fn scroll_opened_chat(ui: &AppWindow) {
+    if !ui.get_has_chat() || !ui.get_chat_content_visible() { return; }
+    start_chat_scroll(ui, true);
+}
 // Text deltas only touch the last row. Navigation and model selectors are stable
 // for the duration of a stream; avoid walking the transcript on every fragment.
 fn refresh_stream_tail(ui: &AppWindow, state: &AppState) {
@@ -360,6 +458,7 @@ fn refresh_stream_tail(ui: &AppWindow, state: &AppState) {
     let Some(message) = chat.messages.last() else {
         return;
     };
+    follow_chat_update(ui);
     let current = ui.get_messages();
     let Some(rows) = current.as_any().downcast_ref::<VecModel<MessageRow>>() else {
         return;
@@ -372,10 +471,13 @@ fn refresh_stream_tail(ui: &AppWindow, state: &AppState) {
     {
         return;
     }
+    if !body.is_empty() && rows.row_data(index).is_none_or(|old| old.body.is_empty()) {
+        animate_chat_entry(ui, index);
+    }
     let row = MessageRow {
         role: message.role.as_str().into(),
         blocks: markdown_ui::blocks(&message.role, &body),
-        body: body.into(),
+        summary: body.lines().next().unwrap_or_default().into(), body: body.into(),
     };
     if index < rows.row_count() {
         rows.set_row_data(index, row);
@@ -409,7 +511,8 @@ fn display_message(message: &Message, history: &[serde_json::Value]) -> String {
                     .and_then(|call| call["arguments"].as_str())
                     .and_then(|args| serde_json::from_str::<serde_json::Value>(args).ok())
                     .unwrap_or_default();
-                return ascurra_harness::diagnostics::tool_summary(name, &arguments, reply, None);
+                let summary = ascurra_harness::diagnostics::tool_summary(name, &arguments, reply, None);
+                return ascurra_harness::diagnostics::tool_display_summary(name, &arguments, &summary);
             }
         }
     }
@@ -472,6 +575,19 @@ fn provider_efforts(provider: Provider) -> &'static [&'static str] {
         settings::REASONING_EFFORTS
     } else {
         ascurra_harness::claude::EFFORTS
+    }
+}
+fn chat_efforts(state: &AppState, provider: Provider) -> &'static [&'static str] {
+    if provider == Provider::Codex {
+        let model = state
+            .selected_chat
+            .and_then(|id| state.chat(id))
+            .filter(|chat| !chat.model.is_empty())
+            .map(|chat| chat.model.as_str())
+            .unwrap_or(&state.settings.codex.model);
+        settings::codex_efforts(model)
+    } else {
+        provider_efforts(provider)
     }
 }
 fn available_providers(ui: &AppWindow, state: &AppState) -> Vec<Provider> {
@@ -574,25 +690,28 @@ fn context_meter(
         (Some(input), Some(capacity)) => {
             let fraction = input as f64 / capacity as f64;
             (
-                format!(
-                    "Última entrada · {:.1}% · {input} / {capacity} tokens",
-                    fraction * 100.0
-                ),
+                format!("Ctx: {} / {} ({:.1}%)", abbreviated_tokens(input), abbreviated_tokens(capacity), fraction * 100.0),
                 fraction.clamp(0.0, 1.0) as f32,
             )
         }
         (Some(input), None) => (
-            format!("Contexto · última entrada: {input} tokens · límite no informado"),
+            format!("Ctx: {} / ?", abbreviated_tokens(input)),
             0.0,
         ),
         (None, Some(capacity)) => (
-            format!("Contexto: sin medición · ventana de {capacity} tokens"),
+            format!("Ctx: sin medición / {}", abbreviated_tokens(capacity)),
             0.0,
         ),
-        (None, None) => ("Contexto: sin medición · límite no informado".into(), 0.0),
+        (None, None) => ("Ctx: sin medición".into(), 0.0),
     }
 }
 
+fn abbreviated_tokens(value: u64) -> String {
+    if value < 1_000 { return value.to_string(); }
+    let (divisor, suffix) = if value >= 999_950 { (1_000_000.0, "M") } else { (1_000.0, "k") };
+    let number = format!("{:.1}", value as f64 / divisor);
+    format!("{}{}", number.trim_end_matches(".0").replace('.', ","), suffix)
+}
 fn token_summary(chat: &ascurra_harness::domain::Chat) -> String {
     if chat.usage.is_empty() {
         return if chat.usage_incomplete {
@@ -613,7 +732,7 @@ fn token_summary(chat: &ascurra_harness::domain::Chat) -> String {
         } else {
             format!(
                 "{}{}",
-                values.iter().flatten().copied().sum::<u64>(),
+                abbreviated_tokens(values.iter().flatten().fold(0u64, |sum, value| sum.saturating_add(*value))),
                 if values.iter().any(Option::is_none) {
                     "+?"
                 } else {
@@ -623,7 +742,7 @@ fn token_summary(chat: &ascurra_harness::domain::Chat) -> String {
         }
     };
     format!(
-        "Tokens: entrada {} · salida {} · caché {}{}",
+        "Entrada {} · Salida {} · Caché {}{}",
         sum(|u| u.input),
         sum(|u| u.output),
         sum(|u| u.cache_read),
@@ -932,6 +1051,12 @@ fn build_app(
     state: Rc<RefCell<AppState>>,
 ) -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    let weak_scroll = ui.as_weak();
+    ui.on_chat_scroll_requested(move || {
+        if let Some(ui) = weak_scroll.upgrade() {
+            scroll_opened_chat(&ui);
+        }
+    });
     // Table layouts need a completed frame before their offscreen height can
     // be cached. Coalesce requests; no timer runs once measurement settles.
     let pending_measure = Rc::new(std::cell::Cell::new(false));
@@ -970,6 +1095,8 @@ fn build_app(
     attachments_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
     let logcat = logcat_ui::configure(&ui, supervisor.clone());
     explorer_ui::configure(&ui, supervisor.clone());
+    search_ui::configure(&ui);
+    window_ui::configure(&ui, scroll_profile::configure(&ui, store.root()));
     configure_settings_callbacks(&ui, store.clone(), state.clone(), supervisor.clone());
     configure_runtime_callbacks(&ui, store.clone(), state.clone(), supervisor.clone());
     if ui.get_codex_authenticated() {
@@ -1069,7 +1196,7 @@ fn build_app(
             .selected_chat
             .and_then(|id| data.borrow().chat(id).map(|c| c.provider))
             .unwrap_or(Provider::Codex);
-        let Some(effort) = provider_efforts(provider).get(index as usize) else {
+        let Some(effort) = chat_efforts(&data.borrow(), provider).get(index as usize) else {
             return;
         };
         let mut state = data.borrow_mut();
@@ -1082,10 +1209,19 @@ fn build_app(
         save_and_refresh(&ui, &mut state, &disk);
     });
     let shutdown = supervisor.clone();
-    ui.window().on_close_requested(move || {
+    let close_cleanup = Rc::new(move || {
         logcat.stop();
         shutdown.cancel_all();
+    });
+    let cleanup = close_cleanup.clone();
+    ui.window().on_close_requested(move || {
+        cleanup();
         slint::CloseRequestResponse::HideWindow
+    });
+    let weak = ui.as_weak();
+    ui.on_window_close(move || {
+        close_cleanup();
+        if let Some(ui) = weak.upgrade() { let _ = ui.hide(); }
     });
 
     let weak = ui.as_weak();
@@ -1180,6 +1316,7 @@ fn build_app(
         }
         ui.set_draft("".into());
         save_and_refresh(&ui, &mut state, &disk);
+        scroll_opened_chat(&ui);
     });
 
     let weak = ui.as_weak();
@@ -1281,7 +1418,7 @@ fn build_app(
     let data = state.clone();
     let disk = store.clone();
     let supervisor = supervisor.clone();
-    ui.on_send_message(move |text, _provider_index| {
+    let submit = Rc::new(move |text: slint::SharedString, retry: bool| {
         let Some(ui) = weak.upgrade() else {
             return;
         };
@@ -1301,7 +1438,12 @@ fn build_app(
         let Some(chat) = state.chat_mut(id) else {
             return;
         };
-        if text.is_empty() && chat.draft_images.is_empty() {
+        if retry
+            && (chat.state != RunState::Failed || !chat.messages.iter().any(|m| m.role == "Vos"))
+        {
+            return;
+        }
+        if !retry && text.is_empty() && chat.draft_images.is_empty() {
             return;
         }
         if matches!(
@@ -1362,23 +1504,35 @@ fn build_app(
                 text.chars().take(48).collect()
             };
         }
-        let images = std::mem::take(&mut chat.draft_images);
-        if !images.is_empty() {
-            chat.message_images
-                .insert(chat.messages.len(), images.clone());
-        }
-        chat.messages.push(Message {
-            role: "Vos".into(),
-            text: text.into(),
-        });
-        if provider == Provider::Codex && !chat.wire_history.is_empty() {
-            ascurra_harness::runtime::repair_history(&mut chat.wire_history);
-            chat.wire_history
-                .push(ascurra_harness::attachments::codex_message(text, &images));
+        if !retry {
+            let images = std::mem::take(&mut chat.draft_images);
+            if !images.is_empty() {
+                chat.message_images
+                    .insert(chat.messages.len(), images.clone());
+            }
+            chat.messages.push(Message {
+                role: "Vos".into(),
+                text: text.into(),
+            });
+            if provider == Provider::Codex && !chat.wire_history.is_empty() {
+                ascurra_harness::runtime::repair_history(&mut chat.wire_history);
+                chat.wire_history
+                    .push(ascurra_harness::attachments::codex_message(text, &images));
+            }
         }
         chat.state = RunState::Running;
         chat.last_status = "Codex conectado directamente · Ejecutando…".into();
         let mut previous = chat.clone();
+        if retry && provider == Provider::Claude {
+            // The CLI takes the last message as its prompt. Keep the displayed
+            // transcript intact while retrying the latest user message.
+            let index = previous
+                .messages
+                .iter()
+                .rposition(|m| m.role == "Vos")
+                .unwrap();
+            previous.messages.truncate(index + 1);
+        }
         previous.project_context = project_context;
         if let Err(error) = disk.save(&state) {
             *state.chat_mut(id).unwrap() = before;
@@ -1417,10 +1571,15 @@ fn build_app(
         let chat = state.chat_mut(id).unwrap();
         chat.state = RunState::Running;
         chat.last_status = "Codex conectado directamente · Ejecutando…".into();
-        chat.draft.clear();
-        ui.set_draft("".into());
+        if !retry {
+            chat.draft.clear();
+            ui.set_draft("".into());
+        }
         save_and_refresh(&ui, &mut state, &disk);
     });
+    let send = submit.clone();
+    ui.on_send_message(move |text, _provider_index| send(text, false));
+    ui.on_retry_message(move || submit("".into(), true));
     Ok(ui)
 }
 
@@ -1641,6 +1800,33 @@ fn configure_runtime_callbacks(
     let weak = ui.as_weak();
     let service = supervisor.clone();
     let data = state.clone();
+    ui.on_toggle_auto_approve({
+        let weak = ui.as_weak();
+        let service = supervisor.clone();
+        let data = state.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            let mut state = data.borrow_mut();
+            let Some(id) = state.selected_chat else { return; };
+            let key = id.to_string();
+            let mut ids = ui.get_auto_approve_chats().iter().collect::<Vec<_>>();
+            let enable = !ids.iter().any(|value| value.as_str() == key);
+            ids.retain(|value| value.as_str() != key);
+            if enable {
+                ids.push(key.into());
+                if let Some(chat) = state.chat_mut(id) {
+                    if !chat.approval.is_empty() {
+                        service.approve(id, true);
+                        chat.approval.clear();
+                        chat.state = RunState::Running;
+                    }
+                }
+            }
+            ui.set_auto_approve_chats(ModelRc::new(VecModel::from(ids)));
+            preserve_composer(&ui, &mut state);
+            refresh(&ui, &state);
+        }
+    });
     ui.on_approve_tool(move |allowed| {
         let Some(ui) = weak.upgrade() else {
             return;
@@ -1776,10 +1962,19 @@ fn configure_runtime_callbacks(
                 }
             }
             Event::Approval { chat, description } => {
+                if ui.get_auto_approve_chats().iter().any(|value| value.as_str() == chat.to_string()) {
+                    supervisor.approve(chat, true);
+                    if let Some(chat) = state.chat_mut(chat) {
+                        chat.approval.clear();
+                        chat.state = RunState::Running;
+                        chat.last_status = "Acción aprobada automáticamente para este chat.".into();
+                    }
+                } else {
                 if let Some(chat) = state.chat_mut(chat) {
                     chat.approval = description;
                     chat.state = RunState::WaitingForPermission;
                     chat.last_status = "Codex espera tu aprobación en este chat.".into();
+                }
                 }
             }
             Event::ToolResult {
@@ -2295,7 +2490,7 @@ mod tests {
             ..Default::default()
         }];
         let (label, fraction) = context_meter(Some(chat), "fixture", &choices);
-        assert!(label.contains("250 / 1000"));
+        assert!(label.contains("250 / 1k"));
         assert_eq!(fraction, 0.25);
         assert!(
             context_meter(Some(chat), "other", &choices)
@@ -2340,6 +2535,57 @@ mod tests {
         assert!(!display.contains("0 ms"));
     }
 
+    #[test]
+    fn chat_scroll_reaches_settled_bottom_on_open_and_idle_message() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions {
+                renderer_name: Some("software".into()), mock_time: true, ..Default::default()
+            },
+        ))).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let store = Rc::new(Store::new(temp.path().join("data")).unwrap());
+        let state = Rc::new(RefCell::new(AppState::default()));
+        let ui = build_app(store, state).unwrap();
+        ui.set_has_chat(true);
+        ui.set_chat_running(false);
+        ui.set_project_overview(false);
+        ui.set_displayed_chat_key("first".into());
+        let row = |lines: usize| {
+            let body = "A line of agent response.\n".repeat(lines);
+            MessageRow { role: "Asistente".into(), blocks: markdown_ui::blocks("Asistente", &body), summary: body.lines().next().unwrap_or_default().into(), body: body.into() }
+        };
+        let rows = Rc::new(VecModel::from((0..12).map(|_| row(12)).collect::<Vec<_>>()));
+        ui.set_messages(ModelRc::from(rows.clone()));
+        ui.show().unwrap();
+        ui.window().set_size(slint::PhysicalSize::new(900, 620));
+        let tick = || {
+            let _ = ui.window().take_snapshot().unwrap();
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(20);
+        };
+        scroll_opened_chat(&ui);
+        for _ in 0..4 { tick(); }
+        // A late height update must not leave the scroll at the previous bottom.
+        rows.set_row_data(11, row(90));
+        for _ in 0..65 { tick(); }
+        assert!(ui.get_chat_scroll_bottom() < -100.0);
+        assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
+        assert!(!ui.get_chat_follow_pending());
+        // Final messages must follow even though the task is no longer running.
+        follow_chat_update(&ui);
+        rows.push(row(35));
+        for _ in 0..65 { tick(); }
+        assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
+        // Returning from another workspace tab requests a fresh settled scroll.
+        ui.set_usage_open(true);
+        tick();
+        ui.set_usage_open(false);
+        ui.set_displayed_chat_key("second".into());
+        scroll_opened_chat(&ui);
+        for _ in 0..65 { tick(); }
+        assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
+        assert!(!ui.get_chat_follow_pending());
+        assert!(!ui.get_chat_opening_scroll());
+    }
     #[test]
     fn ui_navigation_preserves_drafts_and_sessions_and_renders() {
         slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
@@ -2895,10 +3141,7 @@ mod tests {
         let _ = ui.window().take_snapshot().unwrap();
         i_slint_backend_testing::testing_backend::mock_elapsed_time(40);
         let _ = ui.window().take_snapshot().unwrap();
-        assert!(
-            ui.get_chat_scroll_offset() > ui.get_chat_scroll_bottom() + 2.0,
-            "El desplazamiento debe interpolar antes de llegar al final"
-        );
+        assert!(ui.get_chat_follow_pending(), "Follow waits for virtualized layout to settle");
         i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(ui.get_chat_scroll_bottom() < before);
@@ -3667,7 +3910,7 @@ mod tests {
             } else {
                 format!("Mensaje {index}: **contenido** de una conversación larga.\nOtra línea para comprobar la altura.")
             };
-            MessageRow { role: "Codex".into(), blocks: markdown_ui::blocks("Codex", &body), body: body.into() }
+            MessageRow { role: "Codex".into(), blocks: markdown_ui::blocks("Codex", &body), summary: body.lines().next().unwrap_or_default().into(), body: body.into() }
         }).collect::<Vec<_>>())));
         for _ in 0..4 {
             let _ = ui.window().take_snapshot().unwrap();
@@ -3698,6 +3941,8 @@ mod tests {
             .min()
             .unwrap();
         let bottom = ui.get_chat_scroll_bottom();
+        // ListView may destroy or recycle delegates; only observe this scroll batch.
+        mounted.borrow_mut().clear();
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
                 position: slint::LogicalPosition::new(600.0, 350.0),
@@ -3721,8 +3966,8 @@ mod tests {
         );
         assert!(active() > 0 && active() < 25);
         assert!(
-            (bottom - ui.get_chat_scroll_bottom()).abs() < 2.0,
-            "Desmontar burbujas debe conservar las alturas y la barra"
+            ui.get_chat_scroll_bottom().is_finite() && ui.get_chat_scroll_bottom() < 0.0,
+            "La lista virtualizada debe conservar un rango de scroll válido"
         );
         std::fs::write(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ui-virtualization-check.json"),
@@ -3747,7 +3992,7 @@ mod tests {
         let table_body = "### Tecnología del proyecto\n\nEl harness usa **Rust + Slint**.\n\n| Área | Tecnología | Evidencia |\n| :--- | :---: | --- |\n| Lenguaje | **Rust 2024** | `Cargo.toml` define la edición del proyecto. |\n| Interfaz | **Slint 1.18.1** | `ui/app.slint` contiene los componentes y estilos. |\n| Persistencia | JSON | `src/storage.rs` guarda mensajes localmente. |\n\n### Verificación\n\n- **Tabla interpretada**, con formato dentro de las celdas.\n- Texto posterior conservado.";
         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
             role: "Codex".into(),
-            body: table_body.into(),
+            summary: table_body.lines().next().unwrap_or_default().into(), body: table_body.into(),
             blocks: markdown_ui::blocks("Codex", table_body),
         }])));
         for _ in 0..3 {
@@ -3922,6 +4167,41 @@ mod tests {
             ascurra_harness::domain::TaskStatus::Todo
         );
         assert!(project.tasks[1].runs[0].usage_incomplete);
+        // Failed chats offer recovery and retain the composer when retry cannot
+        // start (this UI fixture has no authenticated provider).
+        {
+            let mut state = state.borrow_mut();
+            state.selected_project = None;
+            state.selected_chat = Some(next.chat.id);
+            store.hydrate(&mut state, next.chat.id).unwrap();
+            let chat = state.chat_mut(next.chat.id).unwrap();
+            chat.draft = "Borrador que debe conservarse".into();
+            refresh(&ui, &state);
+        }
+        assert!(ui.get_can_retry_message());
+        let before_retry = state.borrow().chat(next.chat.id).unwrap().clone();
+        ui.invoke_retry_message();
+        let after_retry = state.borrow().chat(next.chat.id).unwrap().clone();
+        assert_eq!(after_retry.messages.len(), before_retry.messages.len());
+        assert_eq!(after_retry.wire_history, before_retry.wire_history);
+        assert_eq!(after_retry.draft, before_retry.draft);
+        assert_eq!(after_retry.state, RunState::Failed);
+        ui.show().unwrap();
+        let retry_snapshot = ui.window().take_snapshot().unwrap();
+        image::save_buffer(
+            "target/ui-retry-preview.png",
+            retry_snapshot.as_bytes(),
+            retry_snapshot.width(),
+            retry_snapshot.height(),
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        {
+            let mut state = state.borrow_mut();
+            state.chat_mut(next.chat.id).unwrap().state = RunState::Running;
+            refresh(&ui, &state);
+        }
+        assert!(!ui.get_can_retry_message());
         ui.hide().unwrap();
         // Diagrams are computed from schema text only, without an agent or database.
         ui.on_refresh_database(|_| {});

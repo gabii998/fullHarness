@@ -108,10 +108,15 @@ pub fn display(ui: &AppWindow, report: &Report) {
                 .into(),
                 metric: format!("≈ {} tokens", c.estimated_tokens).into(),
                 detail: format!(
-                    "Argumentos {} B · respuesta {} B · {} ms",
+                    "Argumentos {} B · respuesta {} B · {} ms{}",
                     number(c.argument_bytes),
                     c.reply_bytes,
-                    c.execution_ms
+                    c.execution_ms,
+                    match (c.offset, c.limit) {
+                        (Some(offset), Some(limit)) =>
+                            format!("\nOffset {offset}, limite {limit}, stream {}", c.stream),
+                        _ => String::new(),
+                    }
                 )
                 .into(),
                 hint: format!(
@@ -194,7 +199,7 @@ pub fn display(ui: &AppWindow, report: &Report) {
     );
     ui.set_usage_status(
         format!(
-            "{} logs{}{}{}",
+            "{} logs{}{}{} \u{b7} {} relecturas exactas \u{b7} {} inspecciones \u{b7} {} B en respuestas de lectura{}",
             report.files,
             if report.partial {
                 " · lectura parcial por límites o ejecución en curso"
@@ -207,10 +212,14 @@ pub fn display(ui: &AppWindow, report: &Report) {
                 String::new()
             },
             if report.missing_chats > 0 {
-                format!(" · {} chats sin logs", report.missing_chats)
+                format!("; {} chats sin logs", report.missing_chats)
             } else {
                 String::new()
-            }
+            },
+            report.repeated_reads,
+            report.inspected_calls,
+            report.read_reply_bytes,
+            if report.truncation_reasons.is_empty() { String::new() } else { format!("; limites: {}", report.truncation_reasons.join(", ")) }
         )
         .into(),
     );
@@ -230,6 +239,7 @@ pub fn configure(
         }
     });
     let generation = Arc::new(AtomicU64::new(0));
+    let scan_gate = Arc::new(std::sync::Mutex::new(()));
     let weak = ui.as_weak();
     let data = store.root().to_path_buf();
     let report = cached.clone();
@@ -274,10 +284,20 @@ pub fn configure(
         let report = report.clone();
         ui.set_usage_busy(true);
         ui.set_usage_status("Leyendo métricas locales…".into());
+        let scan_gate = scan_gate.clone();
+        let worker_generation = current.clone();
         supervisor.executor.spawn(async move {
             let export_project = project.clone();
             let result = tokio::task::spawn_blocking(move || {
+                // Serialize disk work. Superseded queued refreshes never scan or export.
+                let _guard = scan_gate.lock().unwrap();
+                if worker_generation.load(Ordering::Relaxed) != version {
+                    return None;
+                }
                 let result = usage_metrics::scan(&data, &chats, &samples);
+                if worker_generation.load(Ordering::Relaxed) != version {
+                    return None;
+                }
                 let saved = usage_metrics::save(
                     &data,
                     &export_project,
@@ -285,7 +305,7 @@ pub fn configure(
                     &result,
                 )
                 .is_ok();
-                (result, saved)
+                Some((result, saved))
             })
             .await;
             let _ = handle.upgrade_in_event_loop(move |ui| {
@@ -297,7 +317,7 @@ pub fn configure(
                     return;
                 }
                 ui.set_usage_busy(false);
-                if let Ok((result, saved)) = result {
+                if let Ok(Some((result, saved))) = result {
                     *report.lock().unwrap() = result;
                     display(&ui, &report.lock().unwrap());
                     if !saved {

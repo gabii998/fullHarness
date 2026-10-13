@@ -1,5 +1,6 @@
 import { VerticalBox, HorizontalBox, ScrollView, ListView, LineEdit, TextEdit, ComboBox, Button, CheckBox, SpinBox } from "std-widgets.slint";
 
+export struct SearchRow { path: string, line: int, text: string }
 export struct CaptureRow { index: int, name: string, detail: string }
 export struct AttachmentRow { id: string, name: string, image: image }
 export struct HttpRequestRow { id: string, title: string, method: string, selected: bool }
@@ -12,7 +13,7 @@ export struct TabRow { id: string, title: string, selected: bool }
 export struct MarkdownCell { rendered: styled-text, alignment: int }
 export struct MarkdownRow { header: bool, cells: [MarkdownCell] }
 export struct MarkdownBlock { rendered: styled-text, rows: [MarkdownRow] }
-export struct MessageRow { role: string, body: string, blocks: [MarkdownBlock] }
+export struct MessageRow { role: string, body: string, summary: string, blocks: [MarkdownBlock] }
 export struct QuotaRow { caption: string, remaining: float }
 export struct GitRow { path: string, target: string, status: string, staged: bool, unstaged: bool, header: bool, prepared: bool, name: string, directory: string, code: string, added: string, removed: string, stats: string }
 export struct GitCommitRow { id: string, title: string, detail: string }
@@ -36,6 +37,7 @@ component FileViewer inherits Rectangle {
     in property <int> columns;
     in property <int> target-line: 0;
     callback locate();
+    callback row-created();
     locate => { file-scroll.content-y = min(0px, max(file-scroll.visible-height - file-scroll.content-height, -(max(0, root.target-line - 3)) * 20px)); }
     changed target-line => { root.locate(); }
     changed lines => { file-scroll.content-y = 0px; file-scroll.content-x = 0px; root.locate(); }
@@ -43,9 +45,9 @@ component FileViewer inherits Rectangle {
     file-scroll := ListView {
         x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
         content-width: max(self.visible-width, 60px + root.columns * 7.5px);
-        changed content-height => { if root.target-line > 0 { root.locate(); } }
-        animate content-y { duration: 90ms; easing: ease-out; }
+        // Let Slint recycle only the rows that enter the viewport.
         for line[index] in root.lines : Rectangle {
+            init => { root.row-created(); }
             height: 20px; width: file-scroll.content-width;
             background: root.target-line == index + 1 ? #36334e : line.kind == 1 ? #203c31 : line.kind == 2 ? #442b34 : line.kind == 3 ? #2b2b48 : transparent;
             Text { x: 0px; width: 44px; height: 20px; text: index + 1; color: #8291ad; font-family: "Consolas"; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
@@ -164,49 +166,53 @@ component ChatMessage inherits Rectangle {
     in property <MessageRow> message;
     private property <bool> from-user: message.role == "Vos";
     private property <bool> tool: message.role.starts-with("Herramienta");
+    private property <bool> tool-expanded: false;
+    private property <float> tool-expansion: root.tool-expanded ? 1 : 0;
+    animate tool-expansion { duration: 160ms; easing: ease-out; }
     private property <bool> structured: message.blocks.length > 1 || (message.blocks.length == 1 && message.blocks[0].rows.length > 0);
     in property <bool> in-viewport: true;
-    private property <length> measured-height: 0px;
-    private property <bool> measure-needed: true;
-    private property <bool> bubble-active: root.in-viewport || root.measure-needed;
+    // Keep a bounded neighborhood instantiated, independently of what is painted.
+    in property <bool> in-cache: true;
+    private property <bool> bubble-active: root.in-viewport;
     callback visibility-changed(bool);
     callback measure-requested();
     in property <int> measurement-epoch;
-    init => {
-        root.visibility-changed(root.bubble-active);
-        if root.structured { root.measure-requested(); }
-    }
-    changed measure-needed => { if root.measure-needed && root.structured { root.measure-requested(); } }
-    changed measurement-epoch => { if root.structured { root.measure-needed = false; } }
-    changed bubble-active => { root.visibility-changed(root.bubble-active); }
     in property <bool> defer-measurement: false;
-    private property <bool> width-dirty: false;
-    changed width => {
-        if root.defer-measurement { root.width-dirty = true; }
-        else { root.measure-needed = true; }
-    }
-    changed defer-measurement => {
-        if !root.defer-measurement && root.width-dirty { root.measure-needed = true; root.width-dirty = false; }
-    }
-    changed message => { root.measure-needed = true; }
-    height: root.measured-height > 0px ? root.measured-height : 80px;
+    init => { root.visibility-changed(root.bubble-active); }
+    changed bubble-active => { root.visibility-changed(root.bubble-active); }
+    changed message => { root.tool-expanded = false; root.visibility-changed(root.bubble-active); }
+    // Geometry comes from one persistent content tree, not height-change callbacks.
+    height: root.message.body == "" ? 0px : root.tool ? 36px + root.tool-expansion * (max(36px, message-card.height) - 36px) : message-card.height;
+    clip: root.tool;
     vertical-stretch: 0;
-    if root.bubble-active : Rectangle {
+    horizontal-stretch: 1;
+    if root.tool : Rectangle {
+        opacity: 1 - root.tool-expansion;
+        visible: root.in-viewport;
+        x: 0px; y: 0px; width: min(parent.width, 780px); height: 32px;
+        background: #15212c; border-radius: 6px; border-width: 1px; border-color: #2b3a4a;
+        Image { x: 10px; y: 8px; width: 16px; height: 16px; source: @image-url("assets/wrench.svg"); }
+        Text { x: 34px; y: 0px; width: parent.width - 64px; height: 32px; text: root.message.summary; color: #99aabd; font-size: 12px; overflow: elide; wrap: no-wrap; vertical-alignment: center; }
+        Image { x: parent.width - 24px; y: 10px; width: 12px; height: 12px; source: @image-url("assets/chevron-down.svg"); }
+        TouchArea { enabled: !root.tool-expanded; clicked => { root.tool-expanded = true; } }
+    }
+    message-card := Rectangle {
+        opacity: root.tool ? root.tool-expansion : 1;
+        visible: root.bubble-active && root.message.body != "" && (!root.tool || root.tool-expansion > 0);
         width: min(parent.width, root.from-user ? 640px : 780px);
         x: root.from-user ? parent.width - self.width : 0px;
         height: 38px + (root.structured ? rich-body.height : body.height) + 14px;
-        init => { root.measured-height = self.height; if !root.structured { root.measure-needed = false; } }
-        changed height => { root.measured-height = self.height; if !root.structured { root.measure-needed = false; } }
         background: root.from-user ? #292d50 : root.tool ? #15212c : #1c2836;
         border-radius: 10px;
         border-width: root.tool ? 1px : 0px;
         border-color: #2b3a4a;
         Text {
             x: 14px; y: 12px; width: parent.width - 28px; height: 18px;
-            text: root.message.role;
+            text: root.tool ? "Detalles de la llamada" : root.message.role;
             color: root.from-user ? #b7afff : root.tool ? #93a6ba : #9992ff;
             font-size: 12px; font-weight: 600; overflow: elide;
         }
+        if root.tool : IconButton { x: parent.width - 42px; y: 6px; icon: @image-url("assets/chevron-down.svg"); label: "Contraer llamada de herramienta"; clicked => { root.tool-expanded = false; } }
         body := StyledText {
             x: 14px; y: 38px; width: parent.width - 28px;
             height: root.structured ? 0px : self.preferred-height;
@@ -321,8 +327,8 @@ component PanelSelect inherits Rectangle {
     in property <int> active-index;
     in property <bool> enabled: true;
     callback selected(int);
-    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP", "Imágenes"];
-    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg"), @image-url("assets/captures.svg")];
+    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP", "Imágenes", "Buscar"];
+    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg"), @image-url("assets/captures.svg"), @image-url("assets/folder.svg")];
     Button {
         width: parent.width; height: parent.height;
         enabled: root.enabled; accessible-label: "Panel lateral: " + root.labels[root.active-index];
@@ -332,7 +338,7 @@ component PanelSelect inherits Rectangle {
     Text { x: 36px; width: parent.width - 66px; height: parent.height; text: root.labels[root.active-index]; color: root.enabled ? #e3e7f3 : #68738b; font-size: 12px; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
     Image { x: parent.width - 22px; y: (parent.height - 12px) / 2; width: 12px; height: 12px; source: @image-url("assets/chevron-down.svg"); opacity: root.enabled ? 1 : 0.4; }
     options := PopupWindow {
-        x: 0px; y: root.height + 4px; width: root.width; height: 10 * 36px + 16px;
+        x: 0px; y: root.height + 4px; width: root.width; height: root.labels.length * 36px + 16px;
         close-policy: close-on-click-outside;
         Rectangle {
             background: #192534; border-radius: 8px; border-width: 1px; border-color: #384561;
@@ -385,6 +391,13 @@ component SidebarItem inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "Ascurra Harness";
+    no-frame: true;
+    in-out property <bool> window-maximized: false;
+    in property <string> title-project-path;
+    callback window-minimize();
+    callback window-maximize();
+    callback window-close();
+    callback window-drag();
     preferred-width: 1280px;
     preferred-height: 820px;
     min-width: 900px;
@@ -463,11 +476,23 @@ export component AppWindow inherits Window {
     in property <string> token-summary: "Tokens: sin datos";
     in property <string> context-summary: "Contexto: sin medición";
     in property <float> context-fraction: 0;
+    in-out property <string> displayed-chat-key;
+    in-out property <int> chat-entry-index: -1;
+    in-out property <int> chat-entry-generation: 0;
+    in-out property <bool> chat-entry-animate: false;
+    in-out property <float> chat-entry-progress: 1;
+    animate chat-entry-progress { duration: root.chat-entry-animate ? 180ms : 0ms; easing: ease-out; }
+    in-out property <bool> chat-opening-scroll: false;
+    in-out property <bool> chat-follow-pending: false;
+    in-out property <int> chat-scroll-generation: 0;
+    out property <bool> chat-content-visible: !root.file-preview-open && !root.project-overview && !root.usage-open;
+    callback chat-scroll-requested();
+    changed chat-content-visible => { if root.chat-content-visible { root.chat-scroll-requested(); } }
+    callback scroll-chat-to-end();
+    scroll-chat-to-end => { chat-scroll.content-y = root.chat-scroll-bottom; }
     out property <length> chat-scroll-offset: chat-scroll.content-y;
     out property <length> chat-scroll-bottom: min(0px, chat-scroll.visible-height - chat-scroll.content-height);
-    changed chat-running => {
-        chat-scroll.content-y = root.chat-scroll-bottom;
-    }
+
     in property <[QuotaRow]> quota-windows;
     in-out property <int> quota-provider: 0;
     in-out property <string> quota-chat-key;
@@ -478,7 +503,9 @@ export component AppWindow inherits Window {
     in-out property <bool> quota-refresh-pending: false;
     callback refresh-claude-quota(bool);
     private property <[QuotaRow]> shown-quota-windows: root.quota-provider == 0 ? root.quota-windows : root.claude-quota-windows;
-    private property <int> quota-card-rows: max(2, max(root.quota-windows.length, root.claude-quota-windows.length));
+    private property <int> quota-card-rows: root.codex-authenticated && root.claude-authenticated
+        ? max(root.quota-windows.length, root.claude-quota-windows.length)
+        : root.shown-quota-windows.length;
     private property <bool> shown-quota-busy: root.quota-provider == 0 ? root.quota-busy : root.claude-quota-busy;
     changed quota-provider => { if root.quota-provider == 1 { root.refresh-claude-quota(false); } else { root.refresh-quota(false); } }
     in property <string> quota-status: "Conectá ChatGPT para consultar tu cuota.";
@@ -527,7 +554,13 @@ export component AppWindow inherits Window {
     callback add-project(string, string);
     callback browse-folder();
     callback send-message(string, int);
+    callback retry-message();
+    in property <bool> can-retry-message: false;
     callback open-settings();
+    in-out property <bool> scroll-profiling: false;
+    in-out property <string> scroll-profile-status;
+    callback toggle-scroll-profile();
+    callback profile-row-created(string);
     callback save-settings();
     callback close-settings();
     callback detect-agent(int);
@@ -541,6 +574,9 @@ export component AppWindow inherits Window {
     callback cancel-auth();
     callback cancel-chat();
     callback approve-tool(bool);
+    callback toggle-auto-approve();
+    in-out property <[string]> auto-approve-chats;
+    in property <bool> auto-approve-enabled: false;
     callback pick-chat-model(int);
     callback pick-chat-effort(int);
     callback refresh-quota(bool);
@@ -566,10 +602,17 @@ export component AppWindow inherits Window {
     in-out property <string> git-action-message;
     in-out property <[GitCommitRow]> git-history;
     in-out property <bool> git-open: false;
-    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : root.captures-open ? 9 : 0;
+    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : root.captures-open ? 9 : root.search-open ? 10 : 0;
+    in-out property <bool> search-open: false;
+    in-out property <string> search-query;
+    in-out property <int> search-mode: 2;
+    in-out property <string> search-status: "Busca nombres de archivo o texto en el proyecto.";
+    in-out property <[SearchRow]> search-rows;
+    callback run-search();
+    changed search-open => { root.update-workspace-layout(); }
     callback select-panel(int);
     select-panel(index) => {
-        root.git-open = index == 1;
+        root.search-open = index == 10; root.git-open = index == 1;
         root.files-open = index == 2;
         root.terminal-open = index == 3;
         root.lint-open = index == 4;
@@ -592,11 +635,11 @@ export component AppWindow inherits Window {
     private property <bool> panel-dragging: false;
     private property <length> sidebar-reservation: root.sidebar-progress * (root.panel-width + 12px);
     function update-workspace-layout() {
-        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? 292px : 0px)));
+        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? 292px : 0px)));
         root.projects-width = root.projects-compact ? 72px : clamp(root.projects-panel-width, 260px, root.projects-max-width);
         root.panel-max-width = max(280px, min(800px, root.width - root.projects-width - 360px));
         root.panel-width = clamp(root.side-panel-width, 280px, root.panel-max-width);
-        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? root.panel-width + 12px : 0px) < 520px;
+        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? root.panel-width + 12px : 0px) < 520px;
     }
     changed width => { root.update-workspace-layout(); }
     changed side-panel-width => { root.update-workspace-layout(); }
@@ -615,8 +658,10 @@ export component AppWindow inherits Window {
     in-out property <bool> git-dirty: false;
     in-out property <string> git-status: "Abrí un proyecto para consultar Git.";
     in-out property <[GitRow]> git-files;
-    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-git(); } root.update-workspace-layout(); }
+    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-git(); } root.update-workspace-layout(); }
     changed git-project => {
+        root.search-rows = [];
+        root.search-status = "Busca en el proyecto seleccionado.";
         root.project-settings-view = false;
         root.project-tasks-view = false;
         root.task-dialog-open = false;
@@ -658,7 +703,7 @@ export component AppWindow inherits Window {
     in-out property <bool> files-open: false;
     private property <float> git-progress: root.git-open ? 1 : 0;
     private property <float> files-progress: root.files-open ? 1 : 0;
-    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open) ? 1 : 0;
+    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? 1 : 0;
     animate git-progress, files-progress, logcat-progress, database-progress, docker-progress, lint-progress, terminal-progress, http-progress, captures-progress { duration: 180ms; easing: ease-out; }
     in-out property <bool> database-open: false;
     private property <float> database-progress: root.database-open ? 1 : 0;
@@ -676,7 +721,7 @@ export component AppWindow inherits Window {
     callback refresh-database(bool);
     callback browse-database-schema();
     changed database-open => {
-        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-database(true); }
+        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-database(true); }
         root.update-workspace-layout();
     }
     in-out property <bool> docker-open: false;
@@ -691,7 +736,7 @@ export component AppWindow inherits Window {
     callback refresh-docker();
     callback docker-action(string, string);
     changed docker-open => {
-        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.docker-logs-open = false; root.refresh-docker(); }
+        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.docker-logs-open = false; root.refresh-docker(); }
         root.update-workspace-layout();
     }
     in-out property <bool> lint-open: false;
@@ -718,7 +763,7 @@ export component AppWindow inherits Window {
     callback open-problem-file(string, int);
     callback detect-lint(); callback run-lint(); callback stop-lint(); callback save-lint-config(); callback open-lint-logs();
     changed lint-open => {
-        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.detect-lint(); }
+        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.detect-lint(); }
         root.update-workspace-layout();
     }
     in-out property <bool> http-open: false;
@@ -774,7 +819,7 @@ export component AppWindow inherits Window {
     open-http => { root.http-open = true; }
     changed http-open => {
         if root.http-open {
-            root.captures-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
+            root.captures-open = false; root.search-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
             if root.http-loaded-project != root.git-project { root.load-http(); }
         }
         root.update-workspace-layout();
@@ -810,21 +855,14 @@ export component AppWindow inherits Window {
     callback start-terminal(); callback close-terminal(); callback refresh-terminal();
     callback terminal-key(string, bool, bool, bool); callback terminal-scroll(int);
     changed terminal-open => {
-        if root.terminal-open { root.http-open = false; root.captures-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
+        if root.terminal-open { root.http-open = false; root.captures-open = false; root.search-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
         root.refresh-terminal(); root.update-workspace-layout();
     }
     in property <bool> explorer-busy: false;
     in-out property <[FileRow]> explorer-rows;
     in property <string> explorer-status: "Abrí un proyecto para explorar sus archivos.";
     in-out property <bool> file-preview-open: false;
-    changed file-preview-open => {
-        if root.file-preview-open { root.usage-open = false; }
-        if root.file-preview-open {
-            root.saved-chat-offset = chat-scroll.content-y;
-        } else {
-            chat-scroll.content-y = root.chat-running ? root.chat-scroll-bottom : min(0px, max(root.chat-scroll-bottom, root.saved-chat-offset));
-        }
-    }
+    changed file-preview-open => { if root.file-preview-open { root.usage-open = false; } }
     in-out property <[FileTabRow]> file-tabs;
     in-out property <string> file-preview-project;
     in-out property <string> file-preview-path;
@@ -840,12 +878,12 @@ export component AppWindow inherits Window {
     callback select-file(string);
     callback explorer-event(string);
     callback open-project-folder();
-    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
+    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
 
     in-out property <bool> logcat-open: false;
     private property <float> logcat-progress: root.logcat-open ? 1 : 0;
     changed logcat-open => {
-        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.refresh-logcat-devices(); }
+        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-logcat-devices(); }
         else { root.stop-logcat(); }
         root.update-workspace-layout();
     }
@@ -883,10 +921,19 @@ export component AppWindow inherits Window {
         HorizontalBox {
             height: 32px;
             padding: 0px;
-            Image { source: @image-url("assets/logo.svg"); width: 28px; height: 28px; }
-            Text { text: "Ascurra Harness"; color: #f0f2fa; font-size: 19px; font-weight: 600; }
-            Text { text: "MVP 0.1"; color: #91a0bc; font-size: 12px; }
-            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                horizontal-stretch: 1; min-width: 200px;
+                HorizontalBox {
+                    padding: 0px; spacing: 8px;
+                    Image { source: @image-url("assets/logo.svg"); width: 28px; height: 28px; }
+                    Text { text: "Ascurra Harness"; color: #f0f2fa; font-size: 19px; font-weight: 600; height: 32px; vertical-alignment: center; }
+                    Text { text: root.has-project ? root.title-project-path : "MVP 0.1"; height: 32px; vertical-alignment: center; color: #91a0bc; font-size: 12px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                }
+                TouchArea {
+                    pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.window-drag(); } }
+                    double-clicked => { root.window-maximize(); }
+                }
+            }
             Button { text: "Uso"; icon: @image-url("assets/usage.svg"); enabled: root.has-project; clicked => { root.open-usage(); } }
             Button { text: "Configuración"; icon: @image-url("assets/settings.svg"); clicked => { root.open-settings(); } }
             PanelSelect {
@@ -895,13 +942,19 @@ export component AppWindow inherits Window {
                 enabled: root.has-project;
                 selected(index) => { root.select-panel(index); }
             }
+            Button { text: "−"; accessible-label: "Minimizar ventana"; width: 36px; height: 32px; clicked => { root.window-minimize(); } }
+            Button { text: root.window-maximized ? "❐" : "□"; accessible-label: root.window-maximized ? "Restaurar ventana" : "Maximizar ventana"; width: 36px; height: 32px; clicked => { root.window-maximize(); } }
+            Button { text: "×"; accessible-label: "Cerrar ventana"; width: 36px; height: 32px; clicked => { root.window-close(); } }
         }
         HorizontalBox {
             spacing: 12px;
             padding: 0px;
             padding-right: root.sidebar-reservation;
+            VerticalBox {
+                width: root.projects-width; padding: 0px; spacing: 8px;
             projects-panel := Rectangle {
                 width: root.projects-width;
+                vertical-stretch: 1;
                 background: #121d29;
                 border-color: #27354a;
                 border-width: 1px;
@@ -934,8 +987,10 @@ export component AppWindow inherits Window {
                             Rectangle { vertical-stretch: 1; }
                         }
                     }
+                }
+            }
                     if root.projects-compact : Rectangle {
-                        height: 30px + root.quota-card-rows * 10px; background: #172332; border-radius: 8px;
+                        height: 28px + root.quota-card-rows * 10px; background: #172332; border-radius: 8px;
                         VerticalBox {
                             padding: 6px; spacing: 5px;
                             Text { height: 16px; text: root.quota-provider == 0 ? "Codex" : "Claude"; font-size: 10px; color: #c2cde0; horizontal-alignment: center; }
@@ -947,7 +1002,7 @@ export component AppWindow inherits Window {
                         TouchArea { clicked => { if root.codex-authenticated && root.claude-authenticated { root.quota-provider = 1 - root.quota-provider; } } }
                     }
                     if !root.projects-compact : Rectangle {
-                        height: 84px + root.quota-card-rows * 45px;
+                        height: 81px + root.quota-card-rows * 45px;
                         background: #172332; border-radius: 8px;
                         VerticalBox {
                             padding: 10px; spacing: 5px;
@@ -968,7 +1023,7 @@ export component AppWindow inherits Window {
                                     clicked => { root.quota-provider = root.quota-provider == 0 ? 1 : 0; }
                                 }
                             }
-                            Rectangle {
+                            if root.quota-card-rows > 0 : Rectangle {
                                 height: root.quota-card-rows * 45px - 5px;
                                 VerticalBox {
                                     padding: 0px; spacing: 5px; alignment: start;
@@ -1000,7 +1055,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if !root.projects-compact : Rectangle {
+                    if !root.projects-compact && root.codex-authenticated && root.claude-authenticated : Rectangle {
                         height: 18px;
                         private property <int> provider-count: (root.codex-authenticated ? 1 : 0) + (root.claude-authenticated ? 1 : 0);
                         HorizontalBox {
@@ -1016,7 +1071,6 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                }
             }
             work-area := VerticalBox {
                 min-width: 0px;
@@ -1153,23 +1207,9 @@ export component AppWindow inherits Window {
                             Text { text: root.chat-title; color: #f0f2fa; font-size: 18px; font-weight: 600; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                             Button { text: "Logs"; height: 28px; width: 60px; enabled: root.has-chat; clicked => { root.open-logs(); } }
                         }
-                        Text { text: root.project-path; color: #91a0bc; overflow: elide; height: 20px; }
                         Rectangle { height: 1px; background: #2b384e; }
-                        chat-scroll := ScrollView {
-                            vertical-stretch: 1;
-                            content-width: self.visible-width;
-                            horizontal-scrollbar-policy: always-off;
-                            animate content-y { duration: 160ms; easing: ease-out; }
-                            changed content-height => {
-                                if root.chat-running || self.content-y < root.chat-scroll-bottom { self.content-y = root.chat-scroll-bottom; }
-                            }
-                            changed visible-height => {
-                                if root.chat-running || self.content-y < root.chat-scroll-bottom { self.content-y = root.chat-scroll-bottom; }
-                            }
-                            VerticalBox {
-                                padding: 12px;
-                                spacing: 14px;
-                                vertical-stretch: 0;
+                        VerticalBox {
+                            vertical-stretch: 1; padding: 12px; spacing: 10px;
                                 if root.messages.length == 0 : Rectangle {
                                     height: empty-detail.y + empty-detail.height + 24px;
                                     vertical-stretch: 0;
@@ -1177,17 +1217,49 @@ export component AppWindow inherits Window {
                                     empty-title := Text { y: 132px; width: parent.width; height: self.preferred-height; text: root.has-chat ? "¿En qué trabajamos?" : "Todos tus proyectos en una ventana"; color: #dfe4f3; font-size: 20px; wrap: word-wrap; }
                                     empty-detail := Text { y: empty-title.y + empty-title.height + 12px; width: parent.width; height: self.preferred-height; text: !root.has-chat ? "Abrí una carpeta para crear tu primer chat." : root.codex-configured ? "Escribí un pedido para Codex. Las acciones que modifican archivos o ejecutan comandos requieren tu aprobación." : "Configurá un agente para empezar. Tus conversaciones se guardan en este equipo."; color: #91a0bc; wrap: word-wrap; }
                                 }
-                                for message[index] in ((root.file-preview-open || root.usage-open ) ? [] : root.messages) : ChatMessage {
-                                    message: message;
-                                    defer-measurement: root.panel-dragging || root.projects-dragging;
-                                    visibility-changed(active) => { root.chat-bubble-visibility(index, active); }
-                                    measurement-epoch: root.chat-measurement-epoch;
-                                    measure-requested => { root.chat-measure-requested(); }
-                                    in-viewport: self.y + self.height >= -chat-scroll.content-y - 200px && self.y <= -chat-scroll.content-y + chat-scroll.visible-height + 200px;
+                            chat-scroll := ListView {
+                                vertical-stretch: 1;
+                                content-width: self.visible-width;
+                                horizontal-scrollbar-policy: always-off;
+                                // Direct delegates let Slint instantiate only the visible rows.
+                                for message[index] in ((root.file-preview-open || root.usage-open) ? [] : root.messages) : Rectangle {
+                                    init => { root.profile-row-created("chat"); }
+                                    width: chat-scroll.visible-width;
+                                    height: message.body == "" ? 0px : bubble.height + 14px;
+                                    bubble := ChatMessage {
+                                        x: 0px; y: index == root.chat-entry-index ? (1 - root.chat-entry-progress) * 8px : 0px; width: parent.width;
+                                        opacity: index == root.chat-entry-index ? root.chat-entry-progress : 1;
+                                        message: message;
+                                        defer-measurement: root.panel-dragging || root.projects-dragging;
+                                        visibility-changed(active) => { root.chat-bubble-visibility(index, active); }
+                                        measurement-epoch: root.chat-measurement-epoch;
+                                        measure-requested => { root.chat-measure-requested(); }
+                                    }
                                 }
                             }
+                                if root.has-chat && root.chat-running && root.approval-description == "" && !root.file-preview-open && !root.usage-open && !root.project-overview : Rectangle {
+                                    height: 42px; vertical-stretch: 0; horizontal-stretch: 1;
+                                    Rectangle {
+                                        x: 0px; y: 0px; width: 76px; height: 42px;
+                                        background: #1c2836; border-radius: 10px;
+                                        accessible-role: text;
+                                        accessible-label: "El agente está trabajando o esperando una herramienta";
+                                        for index in [0, 1, 2] : Rectangle {
+                                            x: 18px + index * 16px; y: 18px - 2px * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg); width: 7px; height: 7px;
+                                            border-radius: 3.5px; background: #b7afff;
+                                            opacity: 0.65 + 0.35 * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg);
+                                        }
+                                    }
+                                }
                         }
                         if root.notice != "" : Text { text: root.notice; color: #a6b4cb; wrap: word-wrap; font-size: 12px; vertical-stretch: 0; }
+                        if root.can-retry-message : Button {
+                            text: "Reintentar solicitud";
+                            accessible-label: "Reintentar la solicitud fallida";
+                            height: 36px;
+                            enabled: root.selected-agent-configured && !root.chat-running && !root.attachment-busy;
+                            clicked => { root.retry-message(); }
+                        }
                         if root.approval-description != "" : Rectangle {
                             height: 220px;
                             background: #292640;
@@ -1215,27 +1287,24 @@ export component AppWindow inherits Window {
                             }
                         }
                         Rectangle {
-                            height: (root.compact-composer ? 196px : 156px) + (root.attachment-rows.length > 0 ? 80px : 0px);
-                            border-radius: 9px;
-                            background: #192534;
-                            border-width: 1px;
-                            border-color: #34435c;
+                            height: 96px + draft-editor.height + (root.attachment-rows.length > 0 ? 86px : 0px);
+                            draft-measure := Text {
+                                visible: false;
+                                width: max(1px, draft-editor.width - 24px);
+                                text: root.draft + "\u{200b}";
+                                font-size: 14px; wrap: word-wrap;
+                            }
+                            border-radius: 9px; background: #192534; border-width: 1px; border-color: #34435c;
                             VerticalBox {
-                                padding: 10px;
-                                padding-bottom: 0px;
-                                spacing: 0px;
+                                padding: 10px; spacing: 6px;
                                 HorizontalBox {
-                                    height: 26px; padding: 0px; spacing: 9px;
+                                    height: 32px; padding: 0px; spacing: 6px;
+                                    ComboBox { min-width: 0px; max-width: 110px; horizontal-stretch: 1; height: 32px; model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } }
+                                    ComboBox { min-width: 0px; max-width: 180px; horizontal-stretch: 2; height: 32px; model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-model(self.current-index); } }
+                                    ComboBox { min-width: 0px; max-width: 120px; horizontal-stretch: 1; height: 32px; model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-effort(self.current-index); } }
                                     Rectangle { horizontal-stretch: 1; min-width: 0px; }
-                                    Text { text: root.context-summary; color: #a6b4cb; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 0; vertical-alignment: center; }
-                                    Rectangle {
-                                        width: 70px; height: 26px;
-                                        Rectangle {
-                                            y: 11px; height: 4px; width: parent.width; background: #29374b; border-radius: 2px;
-                                            Rectangle { x: 0px; y: 0px; height: parent.height; width: parent.width * root.context-fraction; background: root.context-fraction >= 0.85 ? #e5ad62 : #9182ff; border-radius: 2px; animate width { duration: 120ms; } }
-                                        }
-                                    }
                                 }
+
                                 if root.attachment-rows.length > 0 : ScrollView {
                                     height: 80px; vertical-scrollbar-policy: always-off;
                                     content-height: 74px; content-width: root.attachment-rows.length * 112px;
@@ -1247,47 +1316,60 @@ export component AppWindow inherits Window {
                                         Button { x: 80px; y: 0px; width: 24px; height: 24px; text: "×"; accessible-label: "Quitar " + item.name; enabled: !root.chat-running && !root.attachment-busy; clicked => { root.remove-attachment(item.id); } }
                                     }
                                 }
-                                TextEdit {
+                                HorizontalBox {
+                                    padding: 0px; spacing: 8px;
+                                    height: draft-editor.height;
+                                draft-editor := TextEdit {
+                                    height: clamp(draft-measure.preferred-height + 24px, 44px, 220px);
+                                    vertical-stretch: 0; horizontal-stretch: 1; min-width: 0px;
+                                    wrap: word-wrap;
                                     text <=> root.draft; enabled: root.has-chat; font-size: 14px;
                                     key-pressed(event) => {
+                                        if (event.text == Key.Return || event.text == "\n") && !event.modifiers.shift {
+                                            if root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0) {
+                                                root.send-message(root.draft, root.provider-index);
+                                            }
+                                            return accept;
+                                        }
                                         if event.modifiers.control && (event.text == "v" || event.text == "V" || event.text == "\u{0016}") {
                                             if root.paste-image() { return accept; }
                                         }
                                         return reject;
                                     }
                                 }
-                                Rectangle {
-                                    height: root.compact-composer ? 88px : 48px;
-                                  if !root.compact-composer : HorizontalBox {
-                                    y: 8px; width: parent.width; height: 32px;
-                                    padding: 0px;
-                                    spacing: 6px;
+                                    Rectangle {
+                                        width: 32px; height: draft-editor.height;
+                                    if root.chat-running : IconButton { x: 0px; y: (parent.height - 32px) / 2; width: 32px; height: 32px; icon: @image-url("assets/stop.svg"); label: "Detener respuesta"; clicked => { root.cancel-chat(); } }
+                                    if !root.chat-running : IconButton { x: 0px; y: (parent.height - 32px) / 2; width: 32px; height: 32px; icon: @image-url("assets/send.svg"); label: "Enviar mensaje"; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0); clicked => { root.send-message(root.draft, root.provider-index); } }
+                                    }
+                                }
+                                HorizontalBox {
+                                    height: 32px; padding: 0px; spacing: 6px;
                                     IconButton { width: 32px; height: 32px; icon: @image-url("assets/attach.svg"); label: "Adjuntar imágenes"; enabled: root.has-chat && !root.chat-running && !root.attachment-busy && root.attachment-rows.length < 4; clicked => { root.attach-images(); } }
-                                    Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    ComboBox { model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } width: 95px; height: 32px; }
-                                    ComboBox { model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 140px; height: 32px; selected => { root.pick-chat-model(self.current-index); } }
-                                    ComboBox { model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; width: 95px; height: 32px; selected => { root.pick-chat-effort(self.current-index); } }
-                                    if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
-                                    Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0); clicked => { root.send-message(root.draft, root.provider-index); } }
-                                  }
-                                  if root.compact-composer : VerticalBox {
-                                    y: 8px; width: parent.width; height: 72px;
-                                    padding: 0px; spacing: 8px;
-                                    HorizontalBox {
-                                        height: 32px; padding: 0px; spacing: 6px;
-                                        IconButton { width: 32px; height: 32px; icon: @image-url("assets/attach.svg"); label: "Adjuntar imágenes"; enabled: root.has-chat && !root.chat-running && !root.attachment-busy && root.attachment-rows.length < 4; clicked => { root.attach-images(); } }
-                                        Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
-                                        if root.chat-running : Button { text: "Detener"; height: 32px; width: 70px; clicked => { root.cancel-chat(); } }
-                                        Button { text: "Enviar"; icon: @image-url("assets/send.svg"); height: 32px; width: 90px; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running && !root.attachment-busy && (root.draft != "" || root.attachment-rows.length > 0); clicked => { root.send-message(root.draft, root.provider-index); } }
+                                    Rectangle {
+                                        width: 32px; height: 32px; border-radius: 5px;
+                                        background: root.auto-approve-enabled ? #544629 : transparent;
+                                        IconButton { width: 32px; height: 32px; icon: @image-url("assets/auto-approve.svg"); enabled: root.has-chat; label: root.auto-approve-enabled ? "Desactivar autoaprobación de este chat" : "Autoaprobar este chat: permite escrituras, comandos y HTTP sin confirmación durante esta sesión"; clicked => { root.toggle-auto-approve(); } }
                                     }
+                                    Text { text: root.token-summary; color: #91a0bc; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 1; vertical-alignment: center; }
                                     HorizontalBox {
-                                        height: 32px; padding: 0px; spacing: 6px;
-                                        ComboBox { min-width: 0px; max-width: 95px; horizontal-stretch: 1; height: 32px; model: root.available-agents; current-index <=> root.provider-index; enabled: root.has-chat && root.provider-editable && !root.chat-running; selected => { root.pick-chat-provider(self.current-index); } }
-                                        ComboBox { min-width: 0px; max-width: 140px; horizontal-stretch: 2; height: 32px; model: root.chat-models; current-index <=> root.chat-model-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-model(self.current-index); } }
-                                        ComboBox { min-width: 0px; max-width: 95px; horizontal-stretch: 1; height: 32px; model: root.chat-efforts; current-index <=> root.chat-effort-index; enabled: root.has-chat && root.selected-agent-configured && !root.chat-running; selected => { root.pick-chat-effort(self.current-index); } }
+                                        padding: 0px; spacing: 6px; height: 32px;
+                                        horizontal-stretch: 0;
+                                        Text { text: root.context-summary; color: #a6b4cb; font-size: 11px; overflow: elide; min-width: 0px; horizontal-stretch: 0; vertical-alignment: center; }
+                                        Rectangle {
+                                            width: 64px; height: 32px; horizontal-stretch: 0;
+                                            context-track := Rectangle {
+                                                x: 0px; y: 13px; width: 64px; height: 6px;
+                                                background: #29374b; border-radius: 3px;
+                                                Rectangle {
+                                                    x: 0px; y: 0px; height: context-track.height;
+                                                    width: context-track.width * clamp(root.context-fraction, 0, 1);
+                                                    background: root.context-fraction >= 0.85 ? #e5ad62 : #9182ff;
+                                                    border-radius: min(3px, self.width / 2);
+                                                }
+                                            }
+                                        }
                                     }
-                                  }
                                 }
                             }
                         }
@@ -1359,7 +1441,7 @@ export component AppWindow inherits Window {
                                     VerticalBox {
                                         width: parent.visible-width; padding: 0px; padding-right: 8px; spacing: 10px;
                                         Text { text: "Descripción breve"; color: #dfe4f3; font-weight: 600; }
-                                        TextEdit { text <=> root.project-description; height: 64px; }
+                                        TextEdit { wrap: word-wrap; text <=> root.project-description; height: 64px; }
                                         HorizontalBox {
                                             padding: 0px; height: 30px;
                                             Text { text: "Compilación"; color: #dfe4f3; font-weight: 600; horizontal-stretch: 1; }
@@ -1387,7 +1469,7 @@ export component AppWindow inherits Window {
                                             Button { text: "Cargar Claude"; clicked => { root.import-project-rules(1); } }
                                             Button { text: "Ambos"; clicked => { root.import-project-rules(2); } }
                                         }
-                                        TextEdit { text <=> root.project-rules; height: 220px; }
+                                        TextEdit { wrap: word-wrap; text <=> root.project-rules; height: 220px; }
                                     }
                                 }
                                 if root.project-config-message != "" : Text { text: root.project-config-message; color: #b7afff; font-size: 12px; wrap: word-wrap; }
@@ -1427,7 +1509,7 @@ export component AppWindow inherits Window {
                         background: #141f2c; border-width: 1px; border-color: #2b384e; border-radius: 10px;
                         VerticalBox {
                             padding: 16px; spacing: 10px;
-                            file-viewer := FileViewer { target-line: root.file-target-line; lines: root.file-preview-lines; columns: root.file-preview-columns; }
+                            file-viewer := FileViewer { target-line: root.file-target-line; lines: root.file-preview-lines; columns: root.file-preview-columns; row-created => { root.profile-row-created("file"); } }
                             Rectangle {
                                 height: 26px; background: #172332; border-radius: 4px;
                                 HorizontalBox {
@@ -1490,10 +1572,12 @@ export component AppWindow inherits Window {
             }
             if !root.git-history-view && root.git-repository && root.git-files.length == 0 : Text { text: "No hay archivos con cambios."; color: #91a0bc; font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
             if root.git-history-view && root.git-repository && root.git-history.length == 0 : Text { text: "Todavía no hay commits."; color: #91a0bc; font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
-            if !root.git-history-view : ListView {
+            if !root.git-history-view : git-changes-list := ListView {
+                vertical-stretch: 1; content-width: self.visible-width;
                 horizontal-scrollbar-policy: always-off;
                 for file in root.git-files : Rectangle {
-                    height: file.header ? 30px : 40px;
+                    init => { root.profile-row-created("git_changes"); }
+                    width: git-changes-list.visible-width; height: 40px;
                     background: file.header ? #192534 : git-file-touch.has-hover ? #223145 : transparent;
                     if file.header : Text {
                         x: 8px; width: parent.width - (file.prepared ? 16px : 132px); height: parent.height;
@@ -1543,13 +1627,16 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.git-history-view : ListView {
+            if root.git-history-view : git-history-list := ListView {
+                vertical-stretch: 1; content-width: self.visible-width;
                 horizontal-scrollbar-policy: always-off;
                     for commit in root.git-history : Rectangle {
-                        height: commit-title.preferred-height + commit-detail.preferred-height + 36px;
+                        init => { root.profile-row-created("git_history"); }
+                        width: git-history-list.visible-width; height: 76px;
+                        accessible-role: button; accessible-label: commit.title + " · " + commit.detail;
                         Rectangle { width: parent.width; height: parent.height - 8px; background: commit-touch.has-hover ? #253448 : #1c2939; border-radius: 6px; }
-                        commit-title := Text { x: 9px; y: 8px; width: parent.width - 18px; height: self.preferred-height; text: commit.title; color: #e3e7f3; wrap: word-wrap; font-size: 12px; }
-                        commit-detail := Text { x: 9px; y: commit-title.y + commit-title.height + 6px; width: parent.width - 18px; height: self.preferred-height; text: commit.detail; color: #91a0bc; wrap: word-wrap; font-size: 10px; }
+                        commit-title := Text { x: 9px; y: 8px; width: parent.width - 18px; height: 20px; text: commit.title; color: #e3e7f3; overflow: elide; wrap: no-wrap; font-size: 12px; }
+                        commit-detail := Text { x: 9px; y: 32px; width: parent.width - 18px; height: 28px; text: commit.detail; color: #91a0bc; wrap: word-wrap; overflow: elide; font-size: 10px; }
                         commit-touch := TouchArea { enabled: !root.git-busy; clicked => { root.git-diff(commit.id, true); } }
                     }
             }
@@ -1767,6 +1854,28 @@ export component AppWindow inherits Window {
         }
     }
 
+    if root.search-open : Rectangle {
+        x: root.width - self.width - 14px; y: 58px;
+        width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 10px;
+            Text { text: "Buscar en el proyecto"; color: #e3e7f3; font-size: 15px; font-weight: 600; }
+            LineEdit { text <=> root.search-query; placeholder-text: "Texto o nombre de archivo"; accepted => { root.run-search(); } }
+            ComboBox { model: ["Archivos", "Contenido", "Archivos y contenido"]; current-index <=> root.search-mode; }
+            Button { text: "Buscar"; clicked => { root.run-search(); } }
+            ListView {
+                horizontal-scrollbar-policy: always-off;
+                for result in root.search-rows : Rectangle {
+                    height: 70px; background: result-touch.has-hover ? #263246 : #1b2735;
+                    Text { x: 8px; y: 6px; width: parent.width - 16px; height: 22px; text: result.path + (result.line > 0 ? ":" + result.line : ""); color: #bcb4ff; overflow: elide; font-size: 12px; }
+                    Text { x: 8px; y: 30px; width: parent.width - 16px; height: 32px; text: result.text; color: #dde3ef; overflow: elide; font-size: 11px; }
+                    result-touch := TouchArea { clicked => { root.open-problem-file(result.path, result.line); } }
+                }
+            }
+            Text { text: root.search-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+        }
+    }
     if root.lint-open || root.lint-progress > 0 : Rectangle {
         x: root.width - self.width - 14px + (1 - root.lint-progress) * (self.width + 14px);
         y: 58px; width: root.panel-width; height: root.height - 72px;
@@ -1975,9 +2084,8 @@ export component AppWindow inherits Window {
         tooltip-text := Text { x: 12px; width: parent.width - 24px; height: parent.height; text: root.projects-hover-title; color: #e3e7f3; font-size: 12px; overflow: elide; vertical-alignment: center; }
     }
     if !root.projects-compact : Rectangle {
-        x: root.projects-width + 15px; y: 58px;
-        width: 10px; height: root.height - 72px;
-        Rectangle { x: 4px; y: 12px; width: 2px; height: parent.height - 24px; border-radius: 1px; background: projects-resize.has-hover || root.projects-dragging ? #7970ff : #384561; }
+        x: root.projects-width + 11px; y: 58px;
+        width: 6px; height: projects-panel.height;
         projects-resize := TouchArea {
             private property <length> start-x;
             private property <length> start-width;
@@ -1998,15 +2106,14 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open : Rectangle {
-        x: root.width - root.panel-width - 19px; y: 58px;
-        width: 10px; height: root.height - 72px;
-        Rectangle { x: 4px; y: 12px; width: 2px; height: parent.height - 24px; border-radius: 1px; background: panel-resize.has-hover || root.panel-dragging ? #7970ff : #384561; }
+    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open : Rectangle {
+        x: root.width - root.panel-width - 17px; y: 58px;
+        width: 6px; height: root.height - 72px;
         panel-resize := TouchArea {
             private property <length> start-x;
             private property <length> start-width;
             mouse-cursor: ew-resize;
-            enabled: max(max(root.http-progress, root.captures-progress), max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
+            enabled: root.search-open || max(max(root.http-progress, root.captures-progress), max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
             pointer-event(event) => {
                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                     self.start-x = parent.x + self.mouse-x;
@@ -2236,11 +2343,13 @@ export component AppWindow inherits Window {
                 }
                 Text { text: "Codex usa las herramientas del harness. Claude usa el cliente oficial y las herramientas del harness. Para limitar el consumo a tu plan, desactivá el uso de créditos para esta aplicación en ChatGPT Settings → Usage."; color: #c5badf; wrap: word-wrap; font-size: 12px; }
                 Text { text: root.settings-notice; color: #a6b4cb; wrap: word-wrap; font-size: 12px; }
+                if root.scroll-profile-status != "" : Text { text: root.scroll-profile-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 48px; overflow: elide; }
                 HorizontalBox {
                     padding: 0px;
                     spacing: 8px;
                     Rectangle { horizontal-stretch: 1; }
                     if root.settings-busy : Button { text: "Cancelar conexión"; clicked => { root.cancel-auth(); } }
+                    Button { text: root.scroll-profiling ? "Detener medición" : "Medir scroll"; clicked => { root.toggle-scroll-profile(); } }
                     Button { text: "Cancelar"; enabled: !root.settings-busy; clicked => { root.close-settings(); } }
                     Button { text: "Guardar configuración"; enabled: !root.settings-busy; clicked => { root.save-settings(); } }
                 }

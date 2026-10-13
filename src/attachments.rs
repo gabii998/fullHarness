@@ -156,7 +156,7 @@ pub fn codex_input(history: &[Value], data: &Path, chat: u64) -> Result<Vec<Valu
     let mut result = history.to_vec();
     let mut total = 0usize;
     for message in &mut result {
-        if let Some(parts) = message["content"].as_array_mut() {
+        if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
             for part in parts {
                 if part["type"] == "input_image" {
                     if let Some(id) = part["image_url"]
@@ -207,6 +207,19 @@ pub fn claude_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_preserves_reasoning_and_tool_items_without_inserting_content() {
+        let history = vec![
+            json!({"role":"user","content":"Buscá archivos"}),
+            json!({"type":"reasoning","encrypted_content":"fixture","summary":[]}),
+            json!({"type":"function_call","name":"list_directory","arguments":"{}","call_id":"call_1"}),
+            json!({"type":"function_call_output","call_id":"call_1","output":"ok"}),
+        ];
+        let temp = tempfile::tempdir().unwrap();
+        let wire = codex_input(&history, temp.path(), 1).unwrap();
+        assert_eq!(wire, history);
+        assert!(wire[1..].iter().all(|item| item.get("content").is_none()));
+    }
     #[test]
     fn images_persist_as_references_and_materialize_only_for_transport() {
         let temp = tempfile::tempdir().unwrap();

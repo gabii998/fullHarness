@@ -65,7 +65,25 @@ pub enum Event {
 struct Job {
     cancel: watch::Sender<bool>,
     approval: Option<oneshot::Sender<bool>>,
-    project: String,
+}
+const DEFAULT_MAX_GENERATIONS: usize = 128;
+const HARD_MAX_GENERATIONS: usize = 1024;
+
+fn generation_limit(configured: Option<&str>) -> usize {
+    configured.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_GENERATIONS)
+        .min(HARD_MAX_GENERATIONS)
+}
+
+fn ensure_job_slot(jobs: &HashMap<Id, Job>, chat: Id, limit: usize) -> Result<(), String> {
+    if jobs.contains_key(&chat) {
+        return Err("Este chat ya está ejecutando una tarea.".into());
+    }
+    if jobs.len() >= limit {
+        return Err("Se alcanzó el límite de chats simultáneos configurado.".into());
+    }
+    Ok(())
 }
 pub struct Supervisor {
     pub connection: Arc<Connection>,
@@ -159,15 +177,7 @@ impl Supervisor {
             );
         }
         let mut jobs = self.jobs.lock().unwrap();
-        if jobs.contains_key(&chat.id) {
-            return Err("Este chat ya está ejecutando una tarea.".into());
-        }
-        if jobs.len() >= limit {
-            return Err("Se alcanzó el límite de chats simultáneos configurado.".into());
-        }
-        if jobs.values().any(|job| job.project == project) {
-            return Err("Ya hay un agente trabajando sobre este repositorio. Usá otro proyecto o esperá a que termine.".into());
-        }
+        ensure_job_slot(&jobs, chat.id, limit)?;
         let tools = Tools::new(std::path::Path::new(&project), &data, chat.id)?;
         let mut journal = crate::diagnostics::Journal::new(&data, chat.id)?;
         journal.record(
@@ -182,7 +192,6 @@ impl Supervisor {
             Job {
                 cancel,
                 approval: None,
-                project: project.clone(),
             },
         );
         let supervisor = self.clone();
@@ -235,7 +244,7 @@ impl Supervisor {
                 "run_finished",
                 json!({"state":state,"message":message,"usage_incomplete":incomplete}),
             );
-            if let Some(error) = journal.error {
+            if let Some(error) = &journal.error {
                 message.push_str(&format!(" Log incompleto: {error}"));
             }
             repair_history(&mut history);
@@ -265,7 +274,10 @@ impl Supervisor {
         journal: &mut crate::diagnostics::Journal,
     ) -> Result<(), String> {
         let mut tool_index = 0;
-        for generation in 0..16 {
+        let configured_limit = std::env::var("HARNESS_MAX_GENERATIONS").ok();
+        let max_generations = generation_limit(configured_limit.as_deref());
+        journal.record("generation_budget", json!({"max_generations": max_generations}));
+        for generation in 0..max_generations {
             if *cancel.borrow() {
                 return Err("Cancelado.".into());
             }
@@ -284,6 +296,7 @@ impl Supervisor {
                 body["instructions"] = json!(format!("{base}{project_context}"));
             }
             body["input"] = Value::Array(input);
+            let effort = crate::settings::codex_effort(model, effort);
             if !effort.is_empty() {
                 body["reasoning"] = json!({"effort": effort});
             }
@@ -302,7 +315,7 @@ impl Supervisor {
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    journal.record("generation_failed", json!({"generation":generation,"duration_ms":started.elapsed().as_millis(),"error":error.message,"usage_unknown":error.usage_unknown}));
+                    journal.record("generation_failed", json!({"generation":generation,"duration_ms":started.elapsed().as_millis(),"error":error.message,"usage_unknown":error.usage_unknown,"diagnostics":error.diagnostics}));
                     *incomplete |= error.usage_unknown;
                     return Err(error.message);
                 }
@@ -401,7 +414,7 @@ impl Supervisor {
                 }
             }
         }
-        Err("Se alcanzó el límite de 16 generaciones por mensaje. Podés continuar con otro mensaje.".into())
+        Err(format!("Se alcanzó el límite de {max_generations} rondas por solicitud. El historial se conservó; podés continuar con otro mensaje. El límite se configura con HARNESS_MAX_GENERATIONS (1–1024)."))
     }
     pub(crate) async fn host_tool(
         &self,
@@ -455,7 +468,7 @@ impl Supervisor {
             chat: id,
             name: name.into(),
             reply: reply.clone(),
-            summary,
+            summary: crate::diagnostics::tool_display_summary(name, arguments, &summary),
         });
         reply
     }
@@ -530,6 +543,30 @@ pub fn repair_history(history: &mut Vec<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generation_budget_defaults_to_128_and_is_bounded() {
+        assert_eq!(generation_limit(None), 128);
+        assert_eq!(generation_limit(Some(" 256 ")), 256);
+        assert_eq!(generation_limit(Some("0")), 128);
+        assert_eq!(generation_limit(Some("invalid")), 128);
+        assert_eq!(generation_limit(Some("99999")), 1024);
+        assert_eq!(generation_limit(Some("1")), 1);
+    }
+
+    #[test]
+    fn concurrent_chats_share_slots_without_a_repository_lock() {
+        let mut jobs = HashMap::new();
+        let (cancel, _) = watch::channel(false);
+        jobs.insert(1, Job { cancel, approval: None });
+        assert!(ensure_job_slot(&jobs, 2, 2).is_ok());
+        assert!(ensure_job_slot(&jobs, 1, 2).is_err());
+        assert!(ensure_job_slot(&jobs, 2, 1).is_err());
+        let (cancel, _) = watch::channel(false);
+        jobs.insert(2, Job { cancel, approval: None });
+        assert!(ensure_job_slot(&jobs, 3, 2).is_err());
+        jobs.remove(&1);
+        assert!(ensure_job_slot(&jobs, 3, 2).is_ok());
+    }
     #[test]
     fn usage_subsets_are_not_added_to_totals_and_missing_values_stay_unknown() {
         let usage = reported_usage(
@@ -607,9 +644,20 @@ mod tests {
                     assert!(count > 0);
                     bytes.extend_from_slice(&buffer[..count]);
                 }
-                bodies.push(
-                    serde_json::from_slice::<Value>(&bytes[body_start..body_start + size]).unwrap(),
-                );
+                let body: Value =
+                    serde_json::from_slice(&bytes[body_start..body_start + size]).unwrap();
+                for item in body["input"].as_array().unwrap() {
+                    if matches!(
+                        item["type"].as_str(),
+                        Some("function_call" | "function_call_output" | "reasoning")
+                    ) {
+                        assert!(
+                            item.get("content").is_none(),
+                            "Tool and reasoning items must not acquire content: {item}"
+                        );
+                    }
+                }
+                bodies.push(body);
                 let response = json!({"type":"response.completed","response":{"id":format!("req{index}"),"model":"fixture-model","output":[],"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":50}}}});
                 // Complete items carry the output; no text deltas or terminal output array.
                 let items = output.iter().enumerate().map(|(position, item)| format!("data: {}\n\n", json!({"type":"response.output_item.done","output_index":position,"item":item}))).collect::<String>();
@@ -655,8 +703,8 @@ mod tests {
                 app.chat(id).unwrap().clone(),
                 repo.to_string_lossy().into(),
                 data.clone(),
-                "fixture-model".into(),
-                "low".into(),
+                "gpt-6.1-sol".into(),
+                "minimal".into(),
                 1,
                 Arc::new(move |event| {
                     let _ = send.send(event);

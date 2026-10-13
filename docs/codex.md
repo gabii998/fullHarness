@@ -14,9 +14,15 @@ con la sesión guardada, sin pedir otra autorización.
 
 El selector de effort permite guardar `none`,
 `minimal`, `low`, `medium`, `high`, `xhigh` o `max`. Los niveles admitidos
-dependen del modelo: si rechaza un valor, la tarea muestra el error sin reintentar
-ni cambiar el nivel automáticamente. «Effort: auto» omite `reasoning.effort`.
+dependen del modelo. El selector del chat oculta `minimal` para GPT-6 y `none`
+para GPT-6.1-Sol y GPT-6-Astra. Las preferencias antiguas incompatibles se
+convierten a `low` antes de enviar la solicitud. Si OpenAI rechaza el pedido,
+la tarea muestra el detalle del error sin reintentar. «Effort: auto» omite `reasoning.effort`.
 La preferencia se toma al iniciar la tarea y se conserva en todas sus generaciones.
+Cuando una solicitud falla, «Reintentar solicitud» continúa desde el historial
+guardado, incluidos los resultados de herramientas ya ejecutadas, sin duplicar
+el mensaje ni borrar el borrador o los adjuntos pendientes. El reintento usa
+el modelo y effort seleccionados y nunca se inicia automáticamente.
 Un nivel menor suele reducir tiempo y tokens de razonamiento; ver la
 [documentación oficial](https://developers.openai.com/api/docs/guides/reasoning).
 

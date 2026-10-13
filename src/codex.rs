@@ -135,7 +135,15 @@ fn http_error(status: u16, value: &Value) -> String {
             401 => "ChatGPT rechazó la sesión. Volvé a iniciar sesión.".into(),
             403 => "ChatGPT no autorizó el modelo o el uso del plan para esta aplicación.".into(),
             429 => "OpenAI alcanzó un límite de uso o de solicitudes. Esperá antes de volver a enviar.".into(),
-            _ => format!("La solicitud a OpenAI falló (HTTP {status}). No se reintentó la generación."),
+            _ => {
+                let detail: String = value["error"]["message"].as_str()
+                    .unwrap_or("").chars().filter(|c| !c.is_control()).take(500).collect();
+                if detail.is_empty() {
+                    format!("La solicitud a OpenAI falló (HTTP {status}). No se reintentó la generación.")
+                } else {
+                    format!("La solicitud a OpenAI falló (HTTP {status}): {detail}. No se reintentó la generación.")
+                }
+            },
         }
     }
 }
@@ -428,21 +436,37 @@ impl Connection {
         mut text: impl FnMut(String),
     ) -> Result<Generation, GenerationError> {
         let sent = std::sync::atomic::AtomicBool::new(false);
+        let mut diagnostics = json!({"phase":"prepare"});
         let result = tokio::select! { _ = cancelled(&mut cancel) => Err("Cancelado.".into()), result = async {
             let token = self.access_token().await?;
             if self.uses_native_auth()? {
                 let quota = self.read_account_usage("https://chatgpt.com/backend-api/wham/usage", &token).await?;
                 ensure_plan_quota(&quota)?;
             }
+            diagnostics["phase"] = json!("send_request");
             sent.store(true, std::sync::atomic::Ordering::Relaxed);
             let response = codex_routing(self.client.post(format!("{}/responses", self.inference_resource()?)), &token).bearer_auth(token)
-                .header("Accept", "text/event-stream").json(&body).send().await.map_err(|_| "No se pudo conectar con OpenAI. No se reintentó la generación.")?;
-            if !response.status().is_success() { bounded_json(response).await?; return Err("Respuesta inesperada de OpenAI.".into()); }
-            read_stream(response, &mut text).await
+                .header("Accept", "text/event-stream").json(&body).send().await.map_err(|error| {
+                    diagnostics["failure"] = json!("request_transport");
+                    diagnostics["transport"] = crate::transport_diagnostics::transport_error(error);
+                    "No se pudo conectar con OpenAI. No se reintentó la generación."
+                })?;
+            diagnostics["http_status"] = json!(response.status().as_u16());
+            diagnostics["request_id"] = json!(response.headers().get("x-request-id")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').take(128).collect::<String>()));
+            if !response.status().is_success() {
+                diagnostics["phase"] = json!("http_response");
+                diagnostics["failure"] = json!("http_status");
+                bounded_json(response).await?;
+                return Err("Respuesta inesperada de OpenAI.".into());
+            }
+            read_stream(response, &mut text, &mut diagnostics).await
         } => result };
         result.map_err(|message| GenerationError {
             message,
             usage_unknown: sent.load(std::sync::atomic::Ordering::Relaxed),
+            diagnostics,
         })
     }
 }
@@ -684,6 +708,7 @@ fn unprotect(_: &[u8]) -> Result<Vec<u8>, String> {
 pub struct GenerationError {
     pub message: String,
     pub usage_unknown: bool,
+    pub diagnostics: Value,
 }
 
 pub struct Generation {
@@ -741,21 +766,54 @@ impl SseDecoder {
 async fn read_stream(
     response: Response,
     text: &mut impl FnMut(String),
+    diagnostics: &mut Value,
 ) -> Result<Generation, String> {
+    diagnostics["phase"] = json!("stream");
+    let started = std::time::Instant::now();
+    let mut chunks_received = 0u64;
+    let mut bytes_received = 0u64;
+    let mut events_received = 0u64;
+    diagnostics["stream"] = json!({"chunks_received":0,"bytes_received":0,"events_received":0,"last_event":null,"last_chunk_ms":null,"idle_timeout_seconds":180});
     let mut stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
     let mut batch = String::new();
     let mut length = 0usize;
     let mut last = std::time::Instant::now();
     let mut output = StreamOutput::default();
-    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(180), stream.next())
-        .await
-        .map_err(|_| "OpenAI dejó de responder. El consumo de la solicitud queda incompleto.")?
-    {
-        for event in decoder.feed(&chunk.map_err(
-            |_| "Se interrumpió el streaming. El consumo de la solicitud queda incompleto.",
-        )?)? {
-            output.push(&event)?;
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(180), stream.next()).await;
+        let chunk = match next {
+            Err(_) => {
+                diagnostics["failure"] = json!("stream_idle_timeout");
+                diagnostics["stream"]["elapsed_ms"] = json!(started.elapsed().as_millis());
+                return Err("OpenAI dejó de responder durante 180 segundos. El consumo de la solicitud queda incompleto.".into());
+            }
+            Ok(None) => break,
+            Ok(Some(Err(error))) => {
+                diagnostics["failure"] = json!("stream_transport");
+                diagnostics["transport"] = crate::transport_diagnostics::transport_error(error);
+                diagnostics["stream"]["elapsed_ms"] = json!(started.elapsed().as_millis());
+                return Err("Se interrumpió el streaming. El consumo de la solicitud queda incompleto.".into());
+            }
+            Ok(Some(Ok(chunk))) => chunk,
+        };
+        chunks_received += 1;
+        bytes_received = bytes_received.saturating_add(chunk.len() as u64);
+        diagnostics["stream"]["chunks_received"] = json!(chunks_received);
+        diagnostics["stream"]["bytes_received"] = json!(bytes_received);
+        diagnostics["stream"]["last_chunk_ms"] = json!(started.elapsed().as_millis());
+        let events = decoder.feed(&chunk).map_err(|message| {
+            diagnostics["failure"] = json!("stream_decode");
+            message
+        })?;
+        for event in events {
+            events_received += 1;
+            diagnostics["stream"]["events_received"] = json!(events_received);
+            diagnostics["stream"]["last_event"] = json!(event["type"].as_str().unwrap_or("unknown").chars().take(80).collect::<String>());
+            output.push(&event).map_err(|message| {
+                diagnostics["failure"] = json!("stream_protocol");
+                message
+            })?;
             match event["type"].as_str().unwrap_or("") {
                 "response.output_text.delta" => {
                     let delta = event["delta"].as_str().ok_or("Delta de texto inválido.")?;
@@ -792,6 +850,8 @@ async fn read_stream(
     if !batch.is_empty() {
         text(batch);
     }
+    diagnostics["failure"] = json!("stream_eof_without_terminal");
+    diagnostics["stream"]["elapsed_ms"] = json!(started.elapsed().as_millis());
     Err("El streaming terminó sin confirmación final. El consumo queda incompleto.".into())
 }
 
@@ -898,6 +958,72 @@ pub fn response_error(response: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn diagnostic_stream_fixture(truncated: bool) -> (Result<Generation, String>, Value) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = "data: {\"type\":\"response.created\"}\n\n";
+        let length = if truncated { body.len() + 100 } else { body.len() };
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-request-id: fixture_request\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let response = Client::new().get(format!("http://{address}/")).send().await.unwrap();
+        let mut diagnostics = json!({"http_status":response.status().as_u16(),"request_id":"fixture_request"});
+        let result = read_stream(response, &mut |_| {}, &mut diagnostics).await;
+        server.await.unwrap();
+        (result, diagnostics)
+    }
+
+    #[tokio::test]
+    async fn truncated_stream_keeps_transport_causes() {
+        let (result, diagnostics) = diagnostic_stream_fixture(true).await;
+        assert!(result.is_err());
+        assert_eq!(diagnostics["failure"], "stream_transport");
+        assert_eq!(diagnostics["http_status"], 200);
+        assert_eq!(diagnostics["request_id"], "fixture_request");
+        assert!(diagnostics["transport"]["causes"].as_array().is_some_and(|causes| !causes.is_empty()));
+        assert!(!diagnostics.to_string().contains("http://"));
+    }
+
+    #[tokio::test]
+    async fn stream_eof_is_distinct_from_transport_error() {
+        let (result, diagnostics) = diagnostic_stream_fixture(false).await;
+        assert!(result.is_err());
+        assert_eq!(diagnostics["failure"], "stream_eof_without_terminal");
+        assert_eq!(diagnostics["stream"]["events_received"], 1);
+        assert_eq!(diagnostics["stream"]["last_event"], "response.created");
+        assert!(diagnostics["transport"].is_null());
+    }
+    #[test]
+    fn bad_request_includes_provider_detail() {
+        let error = http_error(
+            400,
+            &json!({"error":{"message":"Unsupported reasoning effort: minimal"}}),
+        );
+        assert!(error.contains("Unsupported reasoning effort: minimal"));
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("No se reintentó"));
+        assert!(
+            !http_error(400, &json!({"error":{"message":"x".repeat(1000)}}))
+                .contains(&"x".repeat(501))
+        );
+    }
+    #[test]
+    fn legacy_efforts_are_migrated_only_for_incompatible_models() {
+        use crate::settings::{codex_effort, codex_efforts};
+        assert_eq!(codex_effort("gpt-6.1-sol", "minimal"), "low");
+        assert_eq!(codex_effort("gpt-6.1-sol", "none"), "low");
+        assert_eq!(codex_effort("gpt-6-astra", "none"), "low");
+        assert_eq!(codex_effort("gpt-6-luna", "none"), "none");
+        assert_eq!(codex_effort("gpt-5", "minimal"), "minimal");
+        assert_eq!(codex_effort("gpt-6.1-sol", ""), "");
+        assert_eq!(codex_effort("gpt-6.1-sol", "high"), "high");
+        assert!(!codex_efforts("gpt-6.1-sol").contains(&"minimal"));
+        assert!(!codex_efforts("gpt-6.1-sol").contains(&"none"));
+    }
     #[test]
     fn completed_items_restore_sparse_terminal_output_without_duplicate_text() {
         let mut output = StreamOutput::default();

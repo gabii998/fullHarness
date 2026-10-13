@@ -2,7 +2,11 @@
 
 [← Volver al índice](../README.md)
 
-El supervisor vive fuera de la navegación de la UI. La concurrencia se configura entre 1 y 4 chats de distintos repositorios; se permite un trabajo activo por repositorio para evitar escrituras simultáneas. «Detener» cancela el transporte y los comandos propios. En Windows un Job Object limita la vida de sus procesos descendientes a la del comando.
+El supervisor vive fuera de la navegación de la UI. La concurrencia se configura entre 1 y 4 chats, incluso dentro del mismo repositorio. Cada chat admite un solo trabajo activo. No hay aislamiento entre chats del mismo repositorio: pueden sobrescribir cambios si editan los mismos archivos. «Detener» cancela el transporte y los comandos propios. En Windows un Job Object limita la vida de sus procesos descendientes a la del comando.
+
+Codex admite por defecto hasta **128 rondas por solicitud**, en lugar de 16. Una ronda puede contener varias llamadas de herramienta; este límite no es la concurrencia. Se puede configurar al iniciar la aplicación con la variable `HARNESS_MAX_GENERATIONS` (de 1 a 1024); valores inválidos o cero usan 128 y valores superiores se limitan a 1024. Al alcanzar el límite, el historial se conserva y se puede continuar con otro mensaje. La cancelación, las aprobaciones y el límite de tamaño de contexto siguen vigentes.
+
+Ejemplo en PowerShell: `$env:HARNESS_MAX_GENERATIONS = "256"`, antes de ejecutar la aplicación.
 
 Herramientas registradas en el espacio `harness`:
 
@@ -31,6 +35,8 @@ herramienta; las acciones apuntan mediante su referencia a los artefactos con
 stdout, stderr y metadatos. Los logs no guardan encabezados OAuth, prompts completos
 ni el contenido de una escritura en el registro de eventos.
 
+Los fallos de generación incluyen `diagnostics` en el evento `generation_failed`: fase del fallo, estado HTTP e identificador `x-request-id` si el servidor lo informó. Para el streaming se registra el número de bloques, bytes y eventos recibidos, el último tipo de evento y los tiempos transcurridos. Se distingue `request_transport`, `stream_transport`, `stream_idle_timeout`, `stream_decode`, `stream_protocol` y `stream_eof_without_terminal`. Los fallos de transporte conservan su descripción y una cadena de hasta ocho causas, con cada texto limitado a 512 caracteres y URLs omitidas. No se registran cabeceras de autenticación ni contenido de los bloques; las métricas se acumulan en memoria y se escriben solo al fallar. No se reintenta automáticamente una generación.
+
 Los logs quedan fuera del contexto y del renderizado del chat. Se limitan a 16 MiB
 por ejecución y las respuestas guardadas a 128 KiB cada una. Si el registro no puede
 completarse, la tarea lo indica sin repetir acciones ya realizadas. No hay escritura
@@ -45,7 +51,7 @@ Markdown no soportado usa texto plano.
 
 Las operaciones de archivos comprueban la pertenencia al repositorio y rechazan rutas que escapan hacia el directorio privado del harness. Los comandos aprobados pueden acceder fuera del repositorio: todavía no hay un sandbox del sistema operativo. La revisión de permisos lo indica antes de ejecutar.
 
-El ciclo admite hasta 16 generaciones por pedido y hasta 4 MiB de historial serializado. Al superar esos límites se detiene con un mensaje; la compactación automática todavía está pendiente. No reintenta automáticamente una generación. Después de una interrupción conserva el historial y completa las llamadas sin resultado con un estado de interrupción al continuar.
+El ciclo admite por defecto hasta 128 rondas por pedido (configurables con `HARNESS_MAX_GENERATIONS`, hasta 1024) y hasta 4 MiB de historial serializado. Al superar esos límites se detiene con un mensaje; la compactación automática todavía está pendiente. No reintenta automáticamente una generación. Después de una interrupción conserva el historial y completa las llamadas sin resultado con un estado de interrupción al continuar.
 
 El streaming conserva los elementos completos de `response.output_item.done`,
 incluidas herramientas y razonamiento cifrado, aunque el evento terminal traiga

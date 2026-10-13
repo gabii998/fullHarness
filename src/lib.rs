@@ -23,3 +23,5 @@ pub mod terminal;
 pub mod tool_runtime;
 pub mod tools;
 pub mod usage_metrics;
+
+mod transport_diagnostics;
