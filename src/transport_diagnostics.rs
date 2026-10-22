@@ -7,7 +7,9 @@ pub(crate) fn transport_error(error: reqwest::Error) -> Value {
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {
         causes.push(safe_text(&cause.to_string()));
-        if causes.len() >= 8 { break; }
+        if causes.len() >= 8 {
+            break;
+        }
         source = cause.source();
     }
     json!({
@@ -24,9 +26,20 @@ pub(crate) fn transport_error(error: reqwest::Error) -> Value {
 
 // Error descriptions must not preserve embedded URLs with query credentials.
 fn safe_text(text: &str) -> String {
-    text.split_whitespace().take(100).map(|word| {
-        if word.contains("://") { "[URL omitida]" } else { word }
-    }).collect::<Vec<_>>().join(" ").chars().take(512).collect()
+    text.split_whitespace()
+        .take(100)
+        .map(|word| {
+            if word.contains("://") {
+                "[URL omitida]"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(512)
+        .collect()
 }
 
 #[cfg(test)]

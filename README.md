@@ -27,7 +27,9 @@ Aplicación de escritorio en Rust + Slint para trabajar con múltiples repositor
 - [Contenedores Docker](docs/docker.md)
 - [Problemas del linter](docs/linters.md)
 - [Terminal del proyecto](docs/terminal.md)
+- [Ejecución del proyecto y acceso del agente](docs/ejecucion-proyecto.md)
 - [Peticiones HTTP](docs/http.md)
+- [Flujos del navegador y exportación de tests](docs/browser-flows.md)
 - [Imágenes del agente](docs/capturas.md)
 - [Imágenes adjuntas al chat](docs/adjuntos.md)
 
@@ -42,3 +44,7 @@ Aplicación de escritorio en Rust + Slint para trabajar con múltiples repositor
 
 - [Verificación](docs/verificacion.md)
 - [Parches locales y dependencias vendorizadas](vendor/README.md)
+
+## Navegador para agentes
+
+Integracion Playwright mediante la herramienta `browser`, compartida por Codex y el MCP de Claude: navegacion, interaccion, snapshots acotados y capturas en la galeria, con aprobacion. Ver [preparacion, llamadas y limites](docs/browser.md).

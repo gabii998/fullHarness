@@ -123,6 +123,50 @@ async fn bounded_json(mut response: Response) -> Result<Value, String> {
     Ok(value)
 }
 
+// Retain only bounded error fields, never the complete provider event.
+fn stream_error(event: &Value) -> (String, Value) {
+    fn field(event: &Value, key: &str) -> String {
+        event["error"][key]
+            .as_str()
+            .or_else(|| event[key].as_str())
+            .unwrap_or("")
+            .split_whitespace()
+            .take(100)
+            .map(|word| {
+                if word.contains("://") {
+                    "[URL omitida]"
+                } else {
+                    word
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(500)
+            .collect()
+    }
+    let message = field(event, "message");
+    let code = field(event, "code");
+    let kind = field(event, "type");
+    let detail = json!({"message": message, "code": code, "type": kind});
+    let suffix = if message.is_empty() {
+        if code.is_empty() {
+            String::new()
+        } else {
+            format!(": {code}")
+        }
+    } else {
+        format!(": {message}")
+    };
+    (
+        format!(
+            "OpenAI informó un error durante el streaming{suffix}. No se reintentó la generación."
+        ),
+        detail,
+    )
+}
+
 fn http_error(status: u16, value: &Value) -> String {
     let code = value["error"]["code"]
         .as_str()
@@ -137,6 +181,7 @@ fn http_error(status: u16, value: &Value) -> String {
             429 => "OpenAI alcanzó un límite de uso o de solicitudes. Esperá antes de volver a enviar.".into(),
             _ => {
                 let detail: String = value["error"]["message"].as_str()
+                    .or_else(|| value["message"].as_str())
                     .unwrap_or("").chars().filter(|c| !c.is_control()).take(500).collect();
                 if detail.is_empty() {
                     format!("La solicitud a OpenAI falló (HTTP {status}). No se reintentó la generación.")
@@ -793,7 +838,10 @@ async fn read_stream(
                 diagnostics["failure"] = json!("stream_transport");
                 diagnostics["transport"] = crate::transport_diagnostics::transport_error(error);
                 diagnostics["stream"]["elapsed_ms"] = json!(started.elapsed().as_millis());
-                return Err("Se interrumpió el streaming. El consumo de la solicitud queda incompleto.".into());
+                return Err(
+                    "Se interrumpió el streaming. El consumo de la solicitud queda incompleto."
+                        .into(),
+                );
             }
             Ok(Some(Ok(chunk))) => chunk,
         };
@@ -809,7 +857,14 @@ async fn read_stream(
         for event in events {
             events_received += 1;
             diagnostics["stream"]["events_received"] = json!(events_received);
-            diagnostics["stream"]["last_event"] = json!(event["type"].as_str().unwrap_or("unknown").chars().take(80).collect::<String>());
+            diagnostics["stream"]["last_event"] = json!(
+                event["type"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            );
             output.push(&event).map_err(|message| {
                 diagnostics["failure"] = json!("stream_protocol");
                 message
@@ -842,7 +897,12 @@ async fn read_stream(
                         completed,
                     });
                 }
-                "error" => return Err(http_error(400, &json!({"error": event}))),
+                "error" => {
+                    diagnostics["failure"] = json!("stream_error");
+                    let (message, detail) = stream_error(&event);
+                    diagnostics["provider_error"] = detail;
+                    return Err(message);
+                }
                 _ => {}
             }
         }
@@ -952,17 +1012,47 @@ pub fn visible_text(output: &[Value]) -> String {
 }
 
 pub fn response_error(response: &Value) -> String {
-    http_error(400, response)
+    stream_error(response).0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_errors_preserve_flat_and_nested_details_without_fake_http_status() {
+        for event in [
+            json!({"type":"error", "code":"invalid_request", "message":"Invalid input"}),
+            json!({"type":"error", "error":{"type":"invalid_request_error", "code":"invalid_request", "message":"Invalid input"}}),
+        ] {
+            let (message, details) = stream_error(&event);
+            assert!(message.contains("Invalid input"));
+            assert!(!message.contains("HTTP 400"));
+            assert_eq!(details["code"], "invalid_request");
+            assert_eq!(details["message"], "Invalid input");
+        }
+    }
+
+    #[test]
+    fn stream_error_details_are_bounded_and_omit_urls() {
+        let (_, details) = stream_error(
+            &json!({"message":format!("https://example.test/?token=secret {}", "x".repeat(2000)), "request":{"secret":"hidden"}}),
+        );
+        assert!(details["message"].as_str().unwrap().chars().count() <= 500);
+        assert!(!details.to_string().contains("secret"));
+        assert!(details.get("request").is_none());
+        let (message, _) = stream_error(&json!({"type":"error"}));
+        assert!(!message.contains("HTTP"));
+    }
+
     async fn diagnostic_stream_fixture(truncated: bool) -> (Result<Generation, String>, Value) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let body = "data: {\"type\":\"response.created\"}\n\n";
-        let length = if truncated { body.len() + 100 } else { body.len() };
+        let length = if truncated {
+            body.len() + 100
+        } else {
+            body.len()
+        };
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0u8; 2048];
@@ -970,8 +1060,13 @@ mod tests {
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-request-id: fixture_request\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
             socket.shutdown().await.unwrap();
         });
-        let response = Client::new().get(format!("http://{address}/")).send().await.unwrap();
-        let mut diagnostics = json!({"http_status":response.status().as_u16(),"request_id":"fixture_request"});
+        let response = Client::new()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        let mut diagnostics =
+            json!({"http_status":response.status().as_u16(),"request_id":"fixture_request"});
         let result = read_stream(response, &mut |_| {}, &mut diagnostics).await;
         server.await.unwrap();
         (result, diagnostics)
@@ -984,7 +1079,11 @@ mod tests {
         assert_eq!(diagnostics["failure"], "stream_transport");
         assert_eq!(diagnostics["http_status"], 200);
         assert_eq!(diagnostics["request_id"], "fixture_request");
-        assert!(diagnostics["transport"]["causes"].as_array().is_some_and(|causes| !causes.is_empty()));
+        assert!(
+            diagnostics["transport"]["causes"]
+                .as_array()
+                .is_some_and(|causes| !causes.is_empty())
+        );
         assert!(!diagnostics.to_string().contains("http://"));
     }
 

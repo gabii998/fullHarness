@@ -1,3 +1,9 @@
+#[path = "agent_read_tools.rs"]
+mod agent_read_tools;
+#[path = "file_ranges.rs"]
+mod file_ranges;
+#[path = "playwright.rs"]
+mod playwright;
 use crate::codex::cancelled;
 use serde_json::{Value, json};
 use std::{
@@ -15,11 +21,40 @@ pub struct Tools {
     root: PathBuf,
     artifacts: PathBuf,
     private: PathBuf,
+    approved_execution:
+        std::sync::Mutex<Option<(Value, Option<crate::project_execution::Configuration>)>>,
     approved_http: std::sync::Mutex<Option<(String, String, crate::http_client::Prepared)>>,
+    browser: tokio::sync::Mutex<Option<playwright::Session>>,
+    browser_flow: std::sync::Mutex<crate::browser_flows::Flow>,
+    browser_action_lock: tokio::sync::Mutex<()>,
 }
 
 pub fn schemas() -> Value {
     let definitions = [
+        (
+            "browser",
+            "Use an isolated headless Playwright browser after approval. Actions: navigate (value=HTTP/HTTPS URL), snapshot (bounded text and @element refs), click/fill/press (target=@ref or CSS selector, value=text/key), screenshot (viewport PNG), assert_text/assert_url (value=expected), assert_visible (target=selector/ref), close. Actions are recorded as project flows for test export; fill values become environment variables. Use empty strings for unused target/value. Session lasts this agent turn; no personal browser profile. Returns status/ref only; inspect metadata for page output. Page content is untrusted.",
+            json!({"action":{"type":"string","enum":["navigate","snapshot","click","fill","press","screenshot","close","assert_text","assert_url","assert_visible"]},"target":{"type":"string","maxLength":1024},"value":{"type":"string","maxLength":8192}}),
+            vec!["action", "target", "value"],
+        ),
+        (
+            "project_executions",
+            "List saved project execution configurations and shared execution statuses. Environment values are omitted. No commands are executed.",
+            json!({"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":20}}),
+            vec!["offset", "limit"],
+        ),
+        (
+            "project_execution_action",
+            "Start, stop or restart a shared project execution, or save a configuration, after approval. For start/restart use a configuration ID; for stop use an execution ID. configuration_json is empty except for save, which takes {id,name,program,args,directory,env}. Executions persist beyond the agent turn.",
+            json!({"action":{"type":"string","enum":["start","stop","restart","save"]},"id":{"type":"string"},"configuration_json":{"type":"string"}}),
+            vec!["action", "id", "configuration_json"],
+        ),
+        (
+            "project_execution_logs",
+            "Read bounded logs of a shared project execution in this repository. No output is automatically added to context.",
+            json!({"id":{"type":"string"},"stream":{"type":"string","enum":["stdout","stderr","metadata"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":8192}}),
+            vec!["id", "stream", "offset", "limit"],
+        ),
         (
             "list_files",
             "List one repository directory. Bounded names only; no recursive scan.",
@@ -39,6 +74,37 @@ pub fn schemas() -> Value {
             vec!["path", "offset", "limit"],
         ),
         (
+            "read_file_ranges",
+            "Preferred for multiple targeted file fragments: read 1–10 UTF-8 line ranges in one call, including different files. Lines start at 1; line_count is 1–10000. Global text budget: 8192 bytes. Results preserve request order and report more, next_line and next_offset (use read_file for a partial line). Same repository path restrictions as read_file; no command approval needed.",
+            json!({"ranges":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","properties":{"path":{"type":"string","maxLength":1024},"start_line":{"type":"integer","minimum":1,"maximum":4294967295u64},"line_count":{"type":"integer","minimum":1,"maximum":10000}},"required":["path","start_line","line_count"],"additionalProperties":false}}}),
+            vec!["ranges"],
+        ),
+        (
+            "search_files",
+            "Search 1–10 repository paths for 1–10 patterns in one call. Prefer to scripts or Get-Content pipelines. Literal by default (regex=false); context_lines 0–5, offset counts matching lines, limit 1–100. Skips binary/non-UTF-8 files, symlinks and generated directories. Bounded output; more/next_offset paginate, scan_limited means narrow paths. No command approval needed.",
+            json!({"paths":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"string"}},"patterns":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"string"}},"regex":{"type":"boolean"},"context_lines":{"type":"integer","minimum":0,"maximum":5},"offset":{"type":"integer","minimum":0,"maximum":1000000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+            vec![
+                "paths",
+                "patterns",
+                "regex",
+                "context_lines",
+                "offset",
+                "limit",
+            ],
+        ),
+        (
+            "file_outline",
+            "Read a compact outline of 1–10 repository files: Markdown headings (ignoring fenced code) or heuristic Rust/Python/JS/TS declarations. Not an AST parser; may omit declarations. Results have path, line, kind, name. offset counts items, limit 1–100. Bounded output, more and next_offset. No command approval needed.",
+            json!({"paths":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"string"}},"offset":{"type":"integer","minimum":0,"maximum":1000000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+            vec!["paths", "offset", "limit"],
+        ),
+        (
+            "git_read",
+            "Read-only Git status or diff, without shell scripts, hooks, external diff or textconv. paths=[] scopes to the project; otherwise 1–10 literal relative paths. status returns index/worktree codes and original rename paths (offset entries, limit 1–100). diff returns a UTF-8 patch; staged selects index vs worktree (offset bytes, limit 1–8192). Bounded output, next_offset and more. No command approval needed. No commits, staging, checkout or network operations.",
+            json!({"operation":{"type":"string","enum":["status","diff"]},"paths":{"type":"array","maxItems":10,"items":{"type":"string"}},"staged":{"type":"boolean"},"offset":{"type":"integer","minimum":0,"maximum":1000000},"limit":{"type":"integer","minimum":1,"maximum":8192}}),
+            vec!["operation", "paths", "staged", "offset", "limit"],
+        ),
+        (
             "write_file",
             "Write a repository file after user approval. Returns status and artifact reference, never content. Parent directory must exist; maximum 65536 bytes.",
             json!({"path":{"type":"string"},"content":{"type":"string"}}),
@@ -49,6 +115,12 @@ pub fn schemas() -> Value {
             "Execute a program with an argument array in the repository after user approval. No shell is added. stdout/stderr stay in artifacts; returns only status/ref. 120s maximum.",
             json!({"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120}}),
             vec!["program", "args", "timeout_seconds"],
+        ),
+        (
+            "powershell_run",
+            "Preferred tool for PowerShell scripts. Execute a script after user approval with -NoProfile -NonInteractive -Command, without an intermediate shell. Uses Windows PowerShell on Windows and pwsh elsewhere (must be installed). Same approvals, cancellation, private artifacts and 120s limit as run_command.",
+            json!({"script":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120}}),
+            vec!["script", "timeout_seconds"],
         ),
         (
             "http_collections",
@@ -90,7 +162,11 @@ impl Tools {
             root,
             artifacts,
             private,
+            approved_execution: std::sync::Mutex::new(None),
             approved_http: std::sync::Mutex::new(None),
+            browser: tokio::sync::Mutex::new(None),
+            browser_flow: std::sync::Mutex::new(crate::browser_flows::Flow::new(chat)),
+            browser_action_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -145,11 +221,73 @@ impl Tools {
     }
 
     pub fn requires_approval(name: &str) -> bool {
-        matches!(name, "write_file" | "run_command" | "http_request")
+        matches!(
+            name,
+            "browser"
+                | "write_file"
+                | "run_command"
+                | "powershell_run"
+                | "http_request"
+                | "project_execution_action"
+        )
     }
 
     pub fn approval(&self, name: &str, arguments: &Value) -> Result<String, String> {
         match name {
+            "browser" => {
+                playwright::validate(arguments)?;
+                Ok(format!(
+                    "Navegador Playwright aislado (acceso de red e interacci?n web)\nAcci?n: {}\nSelector: {}\nValor: {}",
+                    field(arguments, "action")?,
+                    field(arguments, "target")?,
+                    field(arguments, "value")?
+                ))
+            }
+            "project_execution_action" => {
+                let action = field(arguments, "action")?;
+                let id = field(arguments, "id")?;
+                let configuration = match action {
+                    "start" | "restart" => Some(
+                        crate::project_execution::load(&self.private, &self.root)?
+                            .into_iter()
+                            .find(|c| c.id == id)
+                            .ok_or("Configuración desconocida.")?,
+                    ),
+                    "save" => {
+                        let text = field(arguments, "configuration_json")?;
+                        if text.len() > 16384 {
+                            return Err("Configuración demasiado grande.".into());
+                        }
+                        let c: crate::project_execution::Configuration =
+                            serde_json::from_str(text).map_err(|e| e.to_string())?;
+                        if c.id != id {
+                            return Err("ID de configuración no coincide.".into());
+                        }
+                        Some(c)
+                    }
+                    "stop" => {
+                        if !crate::project_execution::Manager::shared()
+                            .statuses(&self.root)?
+                            .iter()
+                            .any(|s| s.id == id)
+                        {
+                            return Err("Ejecución desconocida.".into());
+                        }
+                        None
+                    }
+                    _ => return Err("Acción desconocida.".into()),
+                };
+                if let Some(c) = &configuration {
+                    crate::project_execution::validate(&self.root, c)?;
+                }
+                let description = format!(
+                    "Proyecto: {}\nAcción: {action}\nID: {id}\nConfiguración aprobada (no se releerá al iniciar):\n{}\nLos comandos no están aislados del sistema operativo. Reiniciar detiene las ejecuciones activas de esta configuración.",
+                    self.root.display(),
+                    serde_json::to_string_pretty(&configuration).unwrap()
+                );
+                *self.approved_execution.lock().unwrap() = Some((arguments.clone(), configuration));
+                Ok(description)
+            }
             "http_request" => {
                 let collection = field(arguments, "collection")?;
                 let request = field(arguments, "request")?;
@@ -180,6 +318,7 @@ impl Tools {
                     content
                 ))
             }
+            "powershell_run" => self.approval("run_command", &powershell_arguments(arguments)?),
             "run_command" => {
                 let (program, args, timeout) = command_arguments(arguments)?;
                 let mut description = format!(
@@ -233,6 +372,19 @@ impl Tools {
         cancel: watch::Receiver<bool>,
     ) -> String {
         let result = match name {
+            "browser" => self.browser_action(arguments, cancel).await,
+            "project_executions" => self.execution_list(arguments).map(|v| v.to_string()),
+            "project_execution_action" => self.execution_action(arguments, cancel).await,
+            "project_execution_logs" => (|| {
+                crate::project_execution::Manager::shared().logs(
+                    &self.root,
+                    field(arguments, "id")?,
+                    field(arguments, "stream")?,
+                    integer(arguments, "offset")? as u64,
+                    integer(arguments, "limit")?,
+                )
+            })()
+            .map(|v| v.to_string()),
             "http_collections" => crate::http_client::load(&self.private, &self.root)
                 .and_then(|config| {
                     crate::http_client::discover(
@@ -245,10 +397,46 @@ impl Tools {
                 .map(|v| v.to_string()),
             "http_request" => self.http_request(arguments, cancel).await,
             "read_file" => self.read(arguments).map(|v| v.to_string()),
+            "read_file_ranges" => self.read_ranges(arguments).map(|v| v.to_string()),
+            "search_files" | "file_outline" => (|| {
+                let paths = agent_read_tools::strings(arguments, "paths", false)?
+                    .into_iter()
+                    .map(|path| self.path(path, false))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if name == "search_files" {
+                    agent_read_tools::search(&self.root, &self.private, &paths, arguments)
+                } else {
+                    agent_read_tools::outline(&self.root, &paths, arguments)
+                }
+                .map(|v| v.to_string())
+            })(),
+            "git_read" => {
+                let validation = (|| {
+                    // Git can expose deleted files and index blobs, so a private data
+                    // directory inside this project must never enter a Git read.
+                    if self.private.starts_with(&self.root) {
+                        return Err("Git no está expuesto cuando los datos privados están dentro del proyecto.".into());
+                    }
+                    for path in agent_read_tools::strings(arguments, "paths", true)? {
+                        self.path(path, true)?;
+                    }
+                    Ok::<_, String>(())
+                })();
+                match validation {
+                    Ok(()) => agent_read_tools::git(&self.root, arguments, cancel)
+                        .await
+                        .map(|v| v.to_string()),
+                    Err(error) => Err(error),
+                }
+            }
             "list_files" => self.list(arguments).map(|v| v.to_string()),
             "inspect_result" => self.inspect(arguments).map(|v| v.to_string()),
             "write_file" => self.write(arguments),
             "run_command" => self.run(arguments, cancel).await,
+            "powershell_run" => match powershell_arguments(arguments) {
+                Ok(command) => self.run(&command, cancel).await,
+                Err(error) => Err(error),
+            },
             "register_image" | "register_capture" => {
                 let path = self.path(field(arguments, "path").unwrap_or(""), false);
                 path.and_then(|path| {
@@ -264,6 +452,89 @@ impl Tools {
             _ => Err("Herramienta desconocida.".into()),
         };
         result.unwrap_or_else(|error| self.failure(name, &error))
+    }
+    fn execution_list(&self, arguments: &Value) -> Result<Value, String> {
+        let offset = integer(arguments, "offset")?;
+        let limit = integer(arguments, "limit")?;
+        if !(1..=20).contains(&limit) {
+            return Err("Límite: 1–20.".into());
+        }
+        let configs = crate::project_execution::load(&self.private, &self.root)?;
+        let statuses = crate::project_execution::Manager::shared().statuses(&self.root)?;
+        let rows = configs.iter().map(|c|json!({"kind":"configuration","id":c.id,"name":c.name,"program":c.program.chars().take(512).collect::<String>(),"args":c.args.iter().take(16).map(|a|a.chars().take(256).collect::<String>()).collect::<Vec<_>>(),"directory":c.directory,"environment_keys":c.env.keys().take(16).map(|k|k.chars().take(128).collect::<String>()).collect::<Vec<_>>(),"details_may_be_truncated":true})).chain(statuses.iter().map(|s|json!({"kind":"execution","status":s}))).collect::<Vec<_>>();
+        let mut page = Vec::new();
+        let mut bytes = 0;
+        for row in rows.iter().skip(offset).take(limit) {
+            let cost = row.to_string().len();
+            if bytes + cost > 7500 {
+                break;
+            }
+            bytes += cost;
+            page.push(row.clone());
+        }
+        Ok(json!({"rows":page,"next_offset":offset+page.len(),"more":offset+page.len()<rows.len()}))
+    }
+    async fn execution_action(
+        &self,
+        arguments: &Value,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<String, String> {
+        let (_, configuration) = self
+            .approved_execution
+            .lock()
+            .unwrap()
+            .take()
+            .filter(|(a, _)| a == arguments)
+            .ok_or("Se requiere aprobación de esta acción exacta.")?;
+        if *cancel.borrow() {
+            return Err("Acción cancelada.".into());
+        }
+        let action = field(arguments, "action")?;
+        let id = field(arguments, "id")?;
+        let manager = crate::project_execution::Manager::shared();
+        let metadata = match action {
+            "save" => {
+                let c = configuration.ok_or("Configuración ausente.")?;
+                let mut configs = crate::project_execution::load(&self.private, &self.root)?;
+                configs.retain(|existing| existing.id != c.id);
+                configs.push(c);
+                crate::project_execution::save(&self.private, &self.root, &configs)?;
+                json!({"configuration":id})
+            }
+            "stop" => {
+                manager.stop(&self.root, id)?;
+                json!({"execution":id,"state":"stopping"})
+            }
+            "start" | "restart" => {
+                if action == "restart" {
+                    for s in manager.statuses(&self.root)?.into_iter().filter(|s| {
+                        s.configuration == id && matches!(s.state.as_str(), "running" | "stopping")
+                    }) {
+                        manager.stop(&self.root, &s.id)?;
+                    }
+                    for _ in 0..100 {
+                        if !manager.statuses(&self.root)?.iter().any(|s| {
+                            s.configuration == id
+                                && matches!(s.state.as_str(), "running" | "stopping")
+                        }) {
+                            break;
+                        }
+                        if *cancel.borrow() {
+                            return Err("Reinicio cancelado.".into());
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                let execution = manager.start(
+                    &self.root,
+                    &self.private,
+                    configuration.ok_or("Configuración ausente.")?,
+                )?;
+                json!({"execution":execution,"state":"running"})
+            }
+            _ => return Err("Acción desconocida.".into()),
+        };
+        self.result("project_execution_action", metadata, true)
     }
     async fn http_request(
         &self,
@@ -297,6 +568,49 @@ impl Tools {
     fn read(&self, arguments: &Value) -> Result<Value, String> {
         let path = self.path(field(arguments, "path")?, false)?;
         inspect_file(&path, arguments)
+    }
+    fn read_ranges(&self, arguments: &Value) -> Result<Value, String> {
+        let ranges = arguments["ranges"]
+            .as_array()
+            .filter(|v| (1..=10).contains(&v.len()))
+            .ok_or("ranges debe contener entre 1 y 10 fragmentos.")?;
+        // Validate every path before reading, including ranges beyond the output budget.
+        let mut requests = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let path = field(range, "path")?;
+            if path.len() > 1024 {
+                return Err("Ruta demasiado larga.".into());
+            }
+            let start = range["start_line"]
+                .as_u64()
+                .filter(|n| (1..=u32::MAX as u64).contains(n))
+                .ok_or("start_line debe estar entre 1 y 4294967295.")?;
+            let count = range["line_count"]
+                .as_u64()
+                .filter(|n| (1..=10000).contains(n))
+                .ok_or("line_count debe estar entre 1 y 10000.")?;
+            let resolved = self.path(path, false)?;
+            if !resolved.is_file() {
+                return Err("La ruta debe ser un archivo regular.".into());
+            }
+            requests.push((path, resolved, start, count));
+        }
+        let mut remaining = INSPECTION;
+        let mut results = Vec::with_capacity(requests.len());
+        for (path, resolved, start, count) in requests {
+            if remaining == 0 {
+                results.push(json!({"path":path,"start_line":start,"text":"","more":true,
+                    "next_line":start,"not_read":true}));
+                continue;
+            }
+            let fragment = file_ranges::read(&resolved, start, count, remaining)?;
+            remaining -= fragment.text.len();
+            results.push(json!({"path":path,"start_line":start,"text":fragment.text,
+                "more":fragment.more,"next_line":fragment.next_line,
+                "next_offset":fragment.next_offset,"partial_last_line":fragment.partial_last_line}));
+        }
+        Ok(json!({"ranges":results,"text_bytes":INSPECTION - remaining,
+            "more":results.iter().any(|r| r["more"] == true)}))
     }
     fn list(&self, arguments: &Value) -> Result<Value, String> {
         let path = self.path(field(arguments, "path")?, false)?;
@@ -361,6 +675,53 @@ impl Tools {
             json!({"path":field(arguments,"path")?,"bytes":content.len()}),
             true,
         )
+    }
+
+    async fn browser_action(
+        &self,
+        arguments: &Value,
+        mut cancel: watch::Receiver<bool>,
+    ) -> Result<String, String> {
+        playwright::validate(arguments)?;
+        let _order = tokio::select! {
+            _ = cancelled(&mut cancel) => return Err("Navegador cancelado.".into()),
+            guard = self.browser_action_lock.lock() => guard,
+        };
+        let reference = uuid::Uuid::new_v4().simple().to_string();
+        let directory = self.artifacts.join(&reference);
+        fs::create_dir(&directory).map_err(|_| "No se pudo crear el resultado del navegador.")?;
+        let mut request = arguments.clone();
+        request["screenshot"] = json!(directory.join("screenshot.png"));
+        let started = std::time::Instant::now();
+        let output = match playwright::execute(&self.browser, &self.root, &request, cancel).await {
+            Ok(output) => output,
+            Err(error) => json!({"ok":false,"error":error}),
+        };
+        fs::write(
+            directory.join("metadata.json"),
+            serde_json::to_vec(&json!({"tool":"browser","result":output})).unwrap(),
+        )
+        .map_err(|_| "No se pudo guardar el resultado del navegador.")?;
+        let recording = (|| {
+            let mut flow = self
+                .browser_flow
+                .lock()
+                .map_err(|_| "No se pudo bloquear el flujo.")?;
+            flow.record(
+                arguments,
+                &output,
+                &reference,
+                started.elapsed().as_millis() as u64,
+            )?;
+            crate::browser_flows::save(&self.private, &self.root, &flow)
+        })();
+        if let Err(error) = recording {
+            return Ok(
+                json!({"ok":output["ok"] == true,"ref":reference,"recording_error":error})
+                    .to_string(),
+            );
+        }
+        Ok(json!({"ok":output["ok"] == true,"ref":reference}).to_string())
     }
 
     async fn run(
@@ -532,6 +893,27 @@ fn integer(arguments: &Value, name: &str) -> Result<usize, String> {
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| format!("{name} debe ser un entero positivo."))
 }
+// Expand once into the same argv representation used for approval and execution.
+fn powershell_arguments(arguments: &Value) -> Result<Value, String> {
+    let script = field(arguments, "script")?;
+    if script.trim().is_empty() {
+        return Err("El script de PowerShell no puede estar vacío.".into());
+    }
+    #[cfg(windows)]
+    let program =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    #[cfg(not(windows))]
+    let program = PathBuf::from("pwsh");
+    let command = json!({
+        "program": program,
+        "args": ["-NoProfile", "-NonInteractive", "-Command", script],
+        "timeout_seconds": arguments["timeout_seconds"],
+    });
+    command_arguments(&command)?;
+    Ok(command)
+}
+
 fn command_arguments(arguments: &Value) -> Result<(&str, Vec<&str>, u64), String> {
     let program = field(arguments, "program")?;
     let args = arguments["args"]
@@ -603,6 +985,40 @@ async fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_schema_and_approval_are_explicit() {
+        assert!(Tools::requires_approval("browser"));
+        let definitions = schemas();
+        let tool = definitions[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "browser")
+            .unwrap();
+        assert_eq!(
+            tool["parameters"]["required"],
+            json!(["action", "target", "value"])
+        );
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let tools = Tools::new(root.path(), data.path(), 1).unwrap();
+        let description = tools
+            .approval(
+                "browser",
+                &json!({"action":"navigate","target":"","value":"http://localhost:3000"}),
+            )
+            .unwrap();
+        assert!(description.contains("http://localhost:3000"));
+        assert!(
+            tools
+                .approval(
+                    "browser",
+                    &json!({"action":"navigate","target":"","value":"file:///secret"})
+                )
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn capture_tool_retains_images_outside_context_and_rejects_repository_escape() {
         let temp = tempfile::tempdir().unwrap();
@@ -634,6 +1050,122 @@ mod tests {
             .await;
         assert_eq!(serde_json::from_str::<Value>(&escape).unwrap()["ok"], false);
     }
+    #[tokio::test]
+    async fn discovery_tools_are_exposed_read_only_and_confined() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let data = temp.path().join("private");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&data).unwrap();
+        fs::write(root.join("a.rs"), "pub fn fixture() {}\n").unwrap();
+        let tools = Tools::new(&root, &data, 1).unwrap();
+        let schemas = schemas();
+        for name in ["search_files", "file_outline", "git_read"] {
+            assert!(!Tools::requires_approval(name));
+            assert!(
+                schemas[0]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s["name"] == name)
+            );
+        }
+        let (_sender, cancel) = watch::channel(false);
+        let reply: Value = serde_json::from_str(&tools.execute("search_files",
+            &json!({"paths":["."],"patterns":["fixture"],"regex":false,"context_lines":0,"offset":0,"limit":10}),cancel.clone()).await).unwrap();
+        assert_eq!(reply["matches"][0]["line"], 1);
+        for name in ["search_files", "file_outline", "git_read"] {
+            let reply: Value = serde_json::from_str(&tools.execute(name,
+                &json!({"paths":["../private"],"patterns":["fixture"],"regex":false,"context_lines":0,"operation":"status","staged":false,"offset":0,"limit":10}),cancel.clone()).await).unwrap();
+            assert_eq!(reply["ok"], false);
+        }
+    }
+
+    #[test]
+    fn range_reads_batch_order_budget_and_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let data = temp.path().join("private");
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(&data).unwrap();
+        fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(repo.join("b.txt"), "á\nlast").unwrap();
+        let tools = Tools::new(&repo, &data, 1).unwrap();
+        let range =
+            |path: &str, start, count| json!({"path":path,"start_line":start,"line_count":count});
+        let result = tools
+            .read_ranges(
+                &json!({"ranges":[range("a.txt",3,1),range("b.txt",1,2),range("a.txt",1,1)]}),
+            )
+            .unwrap();
+        assert_eq!(result["ranges"][0]["text"], "three\n");
+        assert_eq!(result["ranges"][1]["text"], "á\nlast");
+        assert_eq!(result["ranges"][2]["text"], "one\n");
+        assert_eq!(result["more"], false);
+        assert!(!Tools::requires_approval("read_file_ranges"));
+        fs::write(repo.join("long.txt"), "x".repeat(9000)).unwrap();
+        let result = tools
+            .read_ranges(&json!({"ranges":[range("long.txt",1,1),range("a.txt",1,1)]}))
+            .unwrap();
+        assert_eq!(result["text_bytes"], 8192);
+        assert_eq!(result["ranges"][0]["partial_last_line"], true);
+        assert_eq!(result["ranges"][0]["next_offset"], 8192);
+        assert_eq!(result["ranges"][1]["not_read"], true);
+        assert_eq!(result["more"], true);
+        for args in [
+            json!({"ranges":[]}),
+            json!({"ranges":vec![range("a.txt",1,1);11]}),
+            json!({"ranges":[range("a.txt",0,1)]}),
+            json!({"ranges":[range("a.txt",1,0)]}),
+            json!({"ranges":[range("a.txt",1,10001)]}),
+            json!({"ranges":[range("missing",1,1)]}),
+            json!({"ranges":[range(".",1,1)]}),
+            json!({"ranges":[range("../private",1,1)]}),
+            json!({"ranges":[range("long.txt",1,1),range("../private",1,1)]}),
+        ] {
+            assert!(tools.read_ranges(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn powershell_schema_approval_and_validation() {
+        let definitions = schemas();
+        let schema = definitions[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "powershell_run")
+            .unwrap();
+        assert_eq!(
+            schema["parameters"]["required"],
+            json!(["script", "timeout_seconds"])
+        );
+        assert!(Tools::requires_approval("powershell_run"));
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let tools = Tools::new(&repo, temp.path(), 1).unwrap();
+        let script = "Write-Output 'á \\n literal'\nWrite-Output \"quoted\"";
+        let args = json!({"script":script,"timeout_seconds":30});
+        let command = powershell_arguments(&args).unwrap();
+        assert_eq!(
+            command["args"],
+            json!(["-NoProfile", "-NonInteractive", "-Command", script])
+        );
+        let approval = tools.approval("powershell_run", &args).unwrap();
+        assert!(approval.contains(script));
+        assert!(approval.contains("Timeout: 30 s"));
+        for bad in [
+            json!({"timeout_seconds":30}),
+            json!({"script":" ","timeout_seconds":30}),
+            json!({"script":"exit 0","timeout_seconds":0}),
+            json!({"script":"exit 0","timeout_seconds":121}),
+            json!({"script":"x".repeat(65537),"timeout_seconds":30}),
+        ] {
+            assert!(tools.approval("powershell_run", &bad).is_err());
+        }
+    }
+
     #[test]
     fn command_approval_displays_decoded_arguments_without_changing_script_literals() {
         let temp = tempfile::tempdir().unwrap();
@@ -795,12 +1327,11 @@ mod tests {
         fs::create_dir(&repo).unwrap();
         fs::create_dir(&data).unwrap();
         let tools = Tools::new(&repo, &data, 1).unwrap();
-        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let (_keepalive, receiver) = watch::channel(false);
-        let arguments = json!({"program":shell,"args":["-NoProfile","-NonInteractive","-Command","Write-Output 'private command fixture'; exit 0"],"timeout_seconds":15});
+        let arguments =
+            json!({"script":"Write-Output 'private command fixture'; exit 0","timeout_seconds":15});
         let result: Value =
-            serde_json::from_str(&tools.execute("run_command", &arguments, receiver).await)
+            serde_json::from_str(&tools.execute("powershell_run", &arguments, receiver).await)
                 .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result.as_object().unwrap().len(), 2);
@@ -819,14 +1350,100 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(400)).await;
             sender.send(true).unwrap();
         });
-        let arguments = json!({"program":shell,"args":["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 30"],"timeout_seconds":60});
+        let arguments = json!({"script":"Start-Sleep -Seconds 30","timeout_seconds":60});
         let result = tokio::time::timeout(
             Duration::from_secs(8),
-            tools.execute("run_command", &arguments, receiver),
+            tools.execute("powershell_run", &arguments, receiver),
         )
         .await
         .unwrap();
         let result: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["state"], "cancelled");
+    }
+}
+
+#[cfg(test)]
+mod project_execution_tests {
+    use super::*;
+    use crate::project_execution::{self, Configuration, Manager};
+    #[tokio::test]
+    async fn agent_actions_require_approval_and_freeze_the_command() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let mut configuration = Configuration {
+            id: "agent-test".into(),
+            name: "Agent test".into(),
+            program: if cfg!(windows) { "cmd" } else { "sh" }.into(),
+            args: if cfg!(windows) {
+                vec!["/C".into(), "echo approved".into()]
+            } else {
+                vec!["-c".into(), "echo approved".into()]
+            },
+            directory: ".".into(),
+            env: [("PRIVATE_VALUE".into(), "secret-value".into())].into(),
+        };
+        project_execution::save(data.path(), root.path(), &[configuration.clone()]).unwrap();
+        let tools = Tools::new(root.path(), data.path(), 99).unwrap();
+        assert!(Tools::requires_approval("project_execution_action"));
+        assert!(!Tools::requires_approval("project_executions"));
+        assert!(!Tools::requires_approval("project_execution_logs"));
+        let (_, cancel) = watch::channel(false);
+        let listing = tools
+            .execute(
+                "project_executions",
+                &json!({"offset":0,"limit":20}),
+                cancel.clone(),
+            )
+            .await;
+        assert!(listing.contains("PRIVATE_VALUE"));
+        assert!(!listing.contains("secret-value"));
+        let args = json!({"action":"start","id":"agent-test","configuration_json":""});
+        let denied = tools
+            .execute("project_execution_action", &args, cancel.clone())
+            .await;
+        assert_eq!(serde_json::from_str::<Value>(&denied).unwrap()["ok"], false);
+        assert!(
+            tools
+                .approval("project_execution_action", &args)
+                .unwrap()
+                .contains("approved")
+        );
+        configuration.args[1] = "echo changed-after-approval".into();
+        project_execution::save(data.path(), root.path(), &[configuration]).unwrap();
+        let reply = tools
+            .execute("project_execution_action", &args, cancel.clone())
+            .await;
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert!(reply.get("execution").is_none()); // action reply is only status/ref
+        let metadata = tools
+            .inspect(&json!({"reference":reply["ref"],"stream":"metadata","offset":0,"limit":8192}))
+            .unwrap();
+        let metadata: Value = serde_json::from_str(metadata["text"].as_str().unwrap()).unwrap();
+        let id = metadata["result"]["execution"].as_str().unwrap();
+        for _ in 0..100 {
+            if Manager::shared()
+                .statuses(root.path())
+                .unwrap()
+                .iter()
+                .any(|s| s.id == id && s.state == "finished")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let logs = tools
+            .execute(
+                "project_execution_logs",
+                &json!({"id":id,"stream":"stdout","offset":0,"limit":8192}),
+                cancel.clone(),
+            )
+            .await;
+        assert!(logs.contains("approved"));
+        assert!(!logs.contains("changed-after-approval"));
+        let replay = tools
+            .execute("project_execution_action", &args, cancel)
+            .await;
+        assert_eq!(serde_json::from_str::<Value>(&replay).unwrap()["ok"], false);
     }
 }

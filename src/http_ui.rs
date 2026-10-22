@@ -41,7 +41,10 @@ fn show(ui: &AppWindow, config: &Config, index: usize, selected: &str) {
                 .map(|r| r.name.clone().into())
                 .collect::<Vec<slint::SharedString>>()
         })
-        .unwrap_or_default(),
+        .unwrap_or_default()
+        .into_iter()
+        .chain(std::iter::once("＋ Nueva request".into()))
+        .collect::<Vec<slint::SharedString>>(),
     )));
     ui.set_http_request_index(
         c.and_then(|c| {
@@ -75,7 +78,12 @@ fn show(ui: &AppWindow, config: &Config, index: usize, selected: &str) {
     ui.set_http_url(request.map(|r| r.url.as_str()).unwrap_or("").into());
     ui.set_http_headers(request.map(|r| r.headers.as_str()).unwrap_or("").into());
     ui.set_http_body(request.map(|r| r.body.as_str()).unwrap_or("").into());
-    ui.set_http_timeout(request.map(|r| r.timeout_seconds as i32).unwrap_or(30));
+    ui.set_http_saved_method_index(ui.get_http_method_index());
+    ui.set_http_saved_url(ui.get_http_url());
+    ui.set_http_saved_headers(ui.get_http_headers());
+    ui.set_http_saved_body(ui.get_http_body());
+    ui.set_http_saved_exposed(ui.get_http_exposed());
+    ui.set_http_timeout(config.timeout_seconds as i32);
 }
 fn draft(ui: &AppWindow, config: &Config) -> Result<Config, String> {
     let mut config = config.clone();
@@ -95,7 +103,6 @@ fn draft(ui: &AppWindow, config: &Config) -> Result<Config, String> {
         r.url = ui.get_http_url().to_string();
         r.headers = ui.get_http_headers().to_string();
         r.body = ui.get_http_body().to_string();
-        r.timeout_seconds = ui.get_http_timeout().clamp(1, 120) as u64;
     }
     http_client::validate(&config)?;
     Ok(config)
@@ -218,6 +225,23 @@ pub fn configure(ui: &AppWindow, store: Rc<Store>, supervisor: Arc<Supervisor>) 
                         .requests
                         .push(request);
                 }
+                "rename-collection" | "rename-request" => {
+                    let name = ui.get_http_rename_name().trim().to_string();
+                    let collection = next
+                        .collections
+                        .get_mut(index)
+                        .ok_or("Seleccioná una colección.")?;
+                    if kind == "rename-collection" {
+                        collection.name = name;
+                    } else {
+                        collection
+                            .requests
+                            .iter_mut()
+                            .find(|r| r.id == selected)
+                            .ok_or("Seleccioná una request.")?
+                            .name = name;
+                    }
+                }
                 "save" => {
                     next = draft(&ui, &next)?;
                 }
@@ -237,6 +261,7 @@ pub fn configure(ui: &AppWindow, store: Rc<Store>, supervisor: Arc<Supervisor>) 
                     selected.clear();
                 }
                 "variables" => {
+                    ui.set_http_timeout(next.timeout_seconds as i32);
                     ui.set_http_variables_json(
                         serde_json::to_string_pretty(&next.variables)
                             .unwrap_or_default()
@@ -246,6 +271,7 @@ pub fn configure(ui: &AppWindow, store: Rc<Store>, supervisor: Arc<Supervisor>) 
                     return Ok(());
                 }
                 "save-variables" => {
+                    next.timeout_seconds = ui.get_http_timeout() as u64;
                     next.variables = serde_json::from_str(ui.get_http_variables_json().as_str())
                         .map_err(
                             |_| "Las variables deben ser un objeto JSON con valores de texto.",
@@ -258,11 +284,52 @@ pub fn configure(ui: &AppWindow, store: Rc<Store>, supervisor: Arc<Supervisor>) 
             }
             http_client::save(&root, std::path::Path::new(&current.0), &next)?;
             current.1 = next;
+            if kind == "rename-collection" || kind == "rename-request" {
+                // Refresh labels only: renaming must not discard the request draft.
+                ui.set_http_collections(ModelRc::new(VecModel::from(
+                    current
+                        .1
+                        .collections
+                        .iter()
+                        .map(|c| c.name.as_str().into())
+                        .collect::<Vec<slint::SharedString>>(),
+                )));
+                if let Some(c) = current.1.collections.get(index) {
+                    ui.set_http_collection_name(c.name.as_str().into());
+                    ui.set_http_request_names(ModelRc::new(VecModel::from(
+                        c.requests
+                            .iter()
+                            .map(|r| r.name.as_str().into())
+                            .chain(std::iter::once("＋ Nueva request".into()))
+                            .collect::<Vec<slint::SharedString>>(),
+                    )));
+                    ui.set_http_requests(ModelRc::new(VecModel::from(
+                        c.requests
+                            .iter()
+                            .map(|r| HttpRequestRow {
+                                id: r.id.as_str().into(),
+                                title: r.name.as_str().into(),
+                                method: r.method.as_str().into(),
+                                selected: r.id == selected,
+                            })
+                            .collect::<Vec<_>>(),
+                    )));
+                    if let Some(r) = c.requests.iter().find(|r| r.id == selected) {
+                        ui.set_http_request_name(r.name.as_str().into());
+                    }
+                }
+                ui.set_http_rename_open(false);
+                ui.set_http_notice("Nombre guardado en este proyecto.".into());
+                return Ok(());
+            }
             *result.lock().unwrap() = None;
             ui.set_http_response_lines(ModelRc::new(VecModel::from(Vec::new())));
             ui.set_http_response_status("".into());
             if kind != "save-variables" {
                 show(&ui, &current.1, target, &selected);
+            }
+            if kind == "delete" {
+                ui.set_http_rename_open(false);
             }
             ui.set_http_variables_open(false);
             ui.set_http_notice("Guardado en este proyecto.".into());

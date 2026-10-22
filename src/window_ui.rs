@@ -5,32 +5,42 @@ pub fn configure(ui: &AppWindow, profiler: crate::scroll_profile::Handle) {
     let weak = ui.as_weak();
     ui.on_window_minimize(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.window().with_winit_window(|window| window.set_minimized(true));
+            ui.window()
+                .with_winit_window(|window| window.set_minimized(true));
         }
     });
     let weak = ui.as_weak();
     ui.on_window_maximize(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.window().with_winit_window(|window| window.set_maximized(!window.is_maximized()));
+            ui.window()
+                .with_winit_window(|window| window.set_maximized(!window.is_maximized()));
         }
     });
     let weak = ui.as_weak();
     ui.on_window_drag(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.window().with_winit_window(|window| { let _ = window.drag_window(); });
+            ui.window().with_winit_window(|window| {
+                let _ = window.drag_window();
+            });
         }
     });
     let weak = ui.as_weak();
     ui.window().on_winit_window_event(move |window, event| {
         if profiler.enabled() {
-            if let Some(ui) = weak.upgrade() { profiler.event(&ui, window, event); }
+            if let Some(ui) = weak.upgrade() {
+                profiler.event(&ui, window, event);
+            }
         }
         // Do not query native window state on every wheel/cursor/redraw event.
-        if !matches!(event, slint::winit_030::winit::event::WindowEvent::Resized(_) | slint::winit_030::winit::event::WindowEvent::ScaleFactorChanged { .. }) {
+        if !matches!(
+            event,
+            slint::winit_030::winit::event::WindowEvent::Resized(_)
+                | slint::winit_030::winit::event::WindowEvent::ScaleFactorChanged { .. }
+        ) {
             return slint::winit_030::EventResult::Propagate;
         }
         if let Some(ui) = weak.upgrade() {
-                        window.with_winit_window(|native| {
+            window.with_winit_window(|native| {
                 let maximized = native.is_maximized();
                 if ui.get_window_maximized() != maximized {
                     ui.set_window_maximized(maximized);

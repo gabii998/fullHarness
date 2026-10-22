@@ -1,8 +1,17 @@
 //! Opt-in scroll timing. No input is injected and no content or filenames are logged.
 use crate::AppWindow;
 use serde_json::{Value, json};
-use slint::{ComponentHandle, Model, winit_030::{WinitWindowAccessor, winit}};
-use std::{cell::{Cell, RefCell}, rc::Rc, path::Path, time::Instant, sync::mpsc::{SyncSender, TrySendError}};
+use slint::{
+    ComponentHandle, Model,
+    winit_030::{WinitWindowAccessor, winit},
+};
+use std::{
+    cell::{Cell, RefCell},
+    path::Path,
+    rc::Rc,
+    sync::mpsc::{SyncSender, TrySendError},
+    time::Instant,
+};
 
 #[derive(Clone)]
 pub struct Handle {
@@ -26,9 +35,13 @@ struct State {
     sequence: u64,
 }
 impl Handle {
-    pub fn enabled(&self) -> bool { self.enabled.get() }
+    pub fn enabled(&self) -> bool {
+        self.enabled.get()
+    }
     pub fn event(&self, ui: &AppWindow, window: &slint::Window, event: &winit::event::WindowEvent) {
-        if !self.enabled() { return; }
+        if !self.enabled() {
+            return;
+        }
         let mut state = self.state.borrow_mut();
         match event {
             winit::event::WindowEvent::CursorMoved { position, .. } => {
@@ -36,19 +49,31 @@ impl Handle {
                 state.cursor_y = position.y;
             }
             winit::event::WindowEvent::MouseWheel { .. } => {
-                let pane = window.with_winit_window(|native| {
-                    let x = state.cursor_x / native.scale_factor();
-                    let y = state.cursor_y / native.scale_factor();
-                    let width = native.inner_size().width as f64 / native.scale_factor();
-                    let sidebar = x >= width - ui.get_side_panel_visible_width() as f64 - 14.0;
-                    if y < 58.0 || ui.get_settings_open() { "other" }
-                    else if sidebar && ui.get_git_open() {
-                        if ui.get_git_history_view() { "git_history" } else { "git_changes" }
-                    } else if sidebar && ui.get_http_open() { "http" }
-                    else if sidebar { "other" }
-                    else if ui.get_file_preview_open() { "file" }
-                    else { "chat" }
-                }).unwrap_or("other");
+                let pane = window
+                    .with_winit_window(|native| {
+                        let x = state.cursor_x / native.scale_factor();
+                        let y = state.cursor_y / native.scale_factor();
+                        let width = native.inner_size().width as f64 / native.scale_factor();
+                        let sidebar = x >= width - ui.get_side_panel_visible_width() as f64 - 14.0;
+                        if y < 58.0 || ui.get_settings_open() {
+                            "other"
+                        } else if sidebar && ui.get_git_open() {
+                            if ui.get_git_history_view() {
+                                "git_history"
+                            } else {
+                                "git_changes"
+                            }
+                        } else if sidebar && ui.get_http_open() {
+                            "http"
+                        } else if sidebar {
+                            "other"
+                        } else if ui.get_file_preview_open() {
+                            "file"
+                        } else {
+                            "chat"
+                        }
+                    })
+                    .unwrap_or("other");
                 let now = Instant::now();
                 if state.pane != pane {
                     state.pane = pane;
@@ -68,7 +93,10 @@ impl Handle {
 
 fn writer(path: &Path) -> Result<SyncSender<Value>, String> {
     use std::io::Write;
-    let file = std::fs::OpenOptions::new().create_new(true).write(true).open(path)
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
         .map_err(|error| format!("No se pudo crear el perfil de scroll: {error}"))?;
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Value>(128);
     std::thread::spawn(move || {
@@ -79,14 +107,26 @@ fn writer(path: &Path) -> Result<SyncSender<Value>, String> {
             match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
                 Ok(value) => {
                     let line = value.to_string() + "\n";
-                    if bytes + line.len() > 4 * 1024 * 1024 { break; }
-                    if file.write_all(line.as_bytes()).is_err() { break; }
+                    if bytes + line.len() > 4 * 1024 * 1024 {
+                        break;
+                    }
+                    if file.write_all(line.as_bytes()).is_err() {
+                        break;
+                    }
                     bytes += line.len();
                     buffered += 1;
-                    if buffered >= 30 { if file.flush().is_err() { break; } buffered = 0; }
+                    if buffered >= 30 {
+                        if file.flush().is_err() {
+                            break;
+                        }
+                        buffered = 0;
+                    }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if file.flush().is_err() { break; } buffered = 0;
+                    if file.flush().is_err() {
+                        break;
+                    }
+                    buffered = 0;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -97,7 +137,10 @@ fn writer(path: &Path) -> Result<SyncSender<Value>, String> {
 }
 
 pub fn configure(ui: &AppWindow, data: &Path) -> Handle {
-    let handle = Handle { enabled: Rc::new(Cell::new(false)), state: Rc::new(RefCell::new(State::default())) };
+    let handle = Handle {
+        enabled: Rc::new(Cell::new(false)),
+        state: Rc::new(RefCell::new(State::default())),
+    };
     let render = handle.clone();
     let weak = ui.as_weak();
     let supported = ui.window().set_rendering_notifier(move |phase, api| {
@@ -150,8 +193,16 @@ pub fn configure(ui: &AppWindow, data: &Path) -> Handle {
     }).is_ok();
     let rows = handle.clone();
     ui.on_profile_row_created(move |pane| {
-        if !rows.enabled() { return; }
-        let index = match pane.as_str() { "file" => 0, "git_changes" => 1, "git_history" => 2, "chat" => 3, _ => return };
+        if !rows.enabled() {
+            return;
+        }
+        let index = match pane.as_str() {
+            "file" => 0,
+            "git_changes" => 1,
+            "git_history" => 2,
+            "chat" => 3,
+            _ => return,
+        };
         rows.state.borrow_mut().rows[index] += 1;
     });
     let directory = data.join("logs").join("performance");

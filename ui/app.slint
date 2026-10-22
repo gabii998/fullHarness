@@ -1,6 +1,24 @@
 import { VerticalBox, HorizontalBox, ScrollView, ListView, LineEdit, TextEdit, ComboBox, Button, CheckBox, SpinBox } from "std-widgets.slint";
 
+component HttpSegments inherits Rectangle {
+    in property <[string]> labels;
+    in-out property <int> current-index: 0;
+    height: 32px; border-radius: 6px; background: #101822;
+    border-width: 1px; border-color: #34435c;
+    HorizontalBox {
+        padding: 3px; spacing: 3px;
+        for label[index] in root.labels : Rectangle {
+            horizontal-stretch: 1; min-width: 72px; border-radius: 4px;
+            background: root.current-index == index ? #354460 : transparent;
+            accessible-role: button; accessible-label: label;
+            Text { text: label; color: root.current-index == index ? #e3e7f3 : #91a0bc; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { clicked => { root.current-index = index; } }
+        }
+    }
+}
+
 export struct SearchRow { path: string, line: int, text: string }
+export struct BrowserStepRow { index: int, included: bool, title: string, detail: string }
 export struct CaptureRow { index: int, name: string, detail: string }
 export struct AttachmentRow { id: string, name: string, image: image }
 export struct HttpRequestRow { id: string, title: string, method: string, selected: bool }
@@ -38,7 +56,20 @@ component FileViewer inherits Rectangle {
     in property <int> target-line: 0;
     callback locate();
     callback row-created();
-    locate => { file-scroll.content-y = min(0px, max(file-scroll.visible-height - file-scroll.content-height, -(max(0, root.target-line - 3)) * 20px)); }
+    private property <bool> locate-pending: false;
+    // ListView computes its virtual content size after the model/layout changes.
+    // Defer the jump until then, and consume it once so manual scrolling stays free.
+    locate => { root.locate-pending = true; }
+    init => { root.locate(); }
+    Timer {
+        interval: 1ms;
+        running: root.locate-pending && file-scroll.visible-height > 0px
+            && file-scroll.content-height >= root.lines.length * 20px;
+        triggered => {
+            file-scroll.content-y = min(0px, max(file-scroll.visible-height - file-scroll.content-height, -(max(0, root.target-line - 3)) * 20px));
+            root.locate-pending = false;
+        }
+    }
     changed target-line => { root.locate(); }
     changed lines => { file-scroll.content-y = 0px; file-scroll.content-x = 0px; root.locate(); }
     background: #1c2836; border-radius: 4px;
@@ -182,7 +213,7 @@ component ChatMessage inherits Rectangle {
     changed bubble-active => { root.visibility-changed(root.bubble-active); }
     changed message => { root.tool-expanded = false; root.visibility-changed(root.bubble-active); }
     // Geometry comes from one persistent content tree, not height-change callbacks.
-    height: root.message.body == "" ? 0px : root.tool ? 36px + root.tool-expansion * (max(36px, message-card.height) - 36px) : message-card.height;
+    height: root.message.body == "" ? 0px : root.tool ? 36px + root.tool-expansion * (max(36px, message-card.height) - 36px) : message-card.height + (root.from-user ? 9px : 0px);
     clip: root.tool;
     vertical-stretch: 0;
     horizontal-stretch: 1;
@@ -201,20 +232,25 @@ component ChatMessage inherits Rectangle {
         visible: root.bubble-active && root.message.body != "" && (!root.tool || root.tool-expansion > 0);
         width: min(parent.width, root.from-user ? 640px : 780px);
         x: root.from-user ? parent.width - self.width : 0px;
-        height: 38px + (root.structured ? rich-body.height : body.height) + 14px;
-        background: root.from-user ? #292d50 : root.tool ? #15212c : #1c2836;
-        border-radius: 10px;
+        height: (root.tool ? 38px : 14px) + (root.structured ? rich-body.height : body.height) + 14px;
+        background: root.from-user ? #292d50 : root.tool ? #15212c : transparent;
+        border-radius: root.from-user || root.tool ? 10px : 0px;
         border-width: root.tool ? 1px : 0px;
         border-color: #2b3a4a;
-        Text {
+        if root.tool : Text {
             x: 14px; y: 12px; width: parent.width - 28px; height: 18px;
-            text: root.tool ? "Detalles de la llamada" : root.message.role;
+            text: "Detalles de la llamada";
             color: root.from-user ? #b7afff : root.tool ? #93a6ba : #9992ff;
             font-size: 12px; font-weight: 600; overflow: elide;
         }
+        if root.from-user : Image {
+            x: parent.width - 26px; y: parent.height - 1px;
+            width: 14px; height: 10px;
+            source: @image-url("assets/chat-tail.svg");
+        }
         if root.tool : IconButton { x: parent.width - 42px; y: 6px; icon: @image-url("assets/chevron-down.svg"); label: "Contraer llamada de herramienta"; clicked => { root.tool-expanded = false; } }
         body := StyledText {
-            x: 14px; y: 38px; width: parent.width - 28px;
+            x: 14px; y: root.tool ? 38px : 14px; width: parent.width - 28px;
             height: root.structured ? 0px : self.preferred-height;
             visible: !root.structured;
             text: root.message.blocks[0].rendered;
@@ -223,7 +259,7 @@ component ChatMessage inherits Rectangle {
             link-color: #b4adff;
         }
         rich-body := VerticalLayout {
-            x: 14px; y: 38px; width: parent.width - 28px;
+            x: 14px; y: root.tool ? 38px : 14px; width: parent.width - 28px;
             height: self.preferred-height;
             spacing: 12px;
             for block in (root.structured ? root.message.blocks : []) : VerticalLayout {
@@ -327,8 +363,8 @@ component PanelSelect inherits Rectangle {
     in property <int> active-index;
     in property <bool> enabled: true;
     callback selected(int);
-    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP", "Imágenes", "Buscar"];
-    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg"), @image-url("assets/captures.svg"), @image-url("assets/folder.svg")];
+    private property <[string]> labels: ["Sin panel", "Git", "Archivos", "Terminal", "Problemas", "Docker", "Base de datos", "Logcat", "HTTP", "Imágenes", "Buscar", "Ejecución", "Navegador / Flujos"];
+    private property <[image]> icons: [@image-url("assets/workspace.svg"), @image-url("assets/git.svg"), @image-url("assets/folder.svg"), @image-url("assets/terminal.svg"), @image-url("assets/problems.svg"), @image-url("assets/docker.svg"), @image-url("assets/database.svg"), @image-url("assets/logcat.svg"), @image-url("assets/http.svg"), @image-url("assets/captures.svg"), @image-url("assets/folder.svg"), @image-url("assets/play.svg"), @image-url("assets/http.svg")];
     Button {
         width: parent.width; height: parent.height;
         enabled: root.enabled; accessible-label: "Panel lateral: " + root.labels[root.active-index];
@@ -359,11 +395,42 @@ component PanelSelect inherits Rectangle {
     }
 }
 
+component ChatTouch inherits TouchArea {
+    in property <bool> chat: true;
+    callback open();
+    callback close-tab();
+    callback delete-chat();
+    private property <length> menu-x;
+    private property <length> menu-y;
+    clicked => { root.open(); }
+    pointer-event(event) => {
+        if root.chat && event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+            root.menu-x = self.mouse-x;
+            root.menu-y = self.mouse-y;
+            menu.show();
+        }
+    }
+    menu := PopupWindow {
+        x: root.menu-x; y: root.menu-y; width: 200px; height: 128px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: #192534; border-radius: 8px; border-width: 1px; border-color: #384561;
+            VerticalBox {
+                padding: 8px; spacing: 4px;
+                Button { text: "Abrir chat"; clicked => { menu.close(); root.open(); } }
+                Button { text: "Cerrar pestaña"; clicked => { menu.close(); root.close-tab(); } }
+                Button { text: "Eliminar chat…"; clicked => { menu.close(); root.delete-chat(); } }
+            }
+        }
+    }
+}
 component SidebarItem inherits Rectangle {
     in property <NavigationRow> item;
     in property <bool> compact: false;
     callback clicked();
     callback hovered(string, length);
+    callback close-tab();
+    callback delete-chat();
     accessible-role: button;
     accessible-label: item.title;
     accessible-action-default => { root.clicked(); }
@@ -383,8 +450,11 @@ component SidebarItem inherits Rectangle {
         Text { y: 24px; width: parent.width; height: 14px; text: item.title; font-size: 9px; color: #c0cbe0; horizontal-alignment: center; overflow: elide; }
         if !item.project : Rectangle { x: parent.width - 9px; y: 5px; width: 6px; height: 6px; border-radius: 3px; background: item.status == "running" ? #46cb7c : #7b8bab; }
     }
-    touch := TouchArea {
-        clicked => { root.clicked(); }
+    touch := ChatTouch {
+        chat: !root.item.project;
+        open => { root.clicked(); }
+        close-tab => { root.close-tab(); }
+        delete-chat => { root.delete-chat(); }
         changed has-hover => { if root.compact { root.hovered(self.has-hover ? root.item.title : "", root.absolute-position.y); } }
     }
 }
@@ -549,6 +619,7 @@ export component AppWindow inherits Window {
     in property <string> claude-status: "Sin verificar en esta sesión.";
 
     callback select-row(string);
+    callback delete-chat(string);
     callback close-tab(string);
     callback new-chat();
     callback add-project(string, string);
@@ -602,14 +673,14 @@ export component AppWindow inherits Window {
     in-out property <string> git-action-message;
     in-out property <[GitCommitRow]> git-history;
     in-out property <bool> git-open: false;
-    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : root.captures-open ? 9 : root.search-open ? 10 : 0;
+    out property <int> active-panel-index: root.git-open ? 1 : root.files-open ? 2 : root.terminal-open ? 3 : root.lint-open ? 4 : root.docker-open ? 5 : root.database-open ? 6 : root.logcat-open ? 7 : root.http-open ? 8 : root.captures-open ? 9 : root.search-open ? 10 : root.execution-open ? 11 : root.flows-open ? 12 : 0;
     in-out property <bool> search-open: false;
     in-out property <string> search-query;
     in-out property <int> search-mode: 2;
     in-out property <string> search-status: "Busca nombres de archivo o texto en el proyecto.";
     in-out property <[SearchRow]> search-rows;
     callback run-search();
-    changed search-open => { root.update-workspace-layout(); }
+    changed search-open => { if root.search-open { root.execution-open = false; root.flows-open = false; } root.update-workspace-layout(); }
     callback select-panel(int);
     select-panel(index) => {
         root.search-open = index == 10; root.git-open = index == 1;
@@ -619,7 +690,7 @@ export component AppWindow inherits Window {
         root.docker-open = index == 5;
         root.database-open = index == 6;
         root.logcat-open = index == 7;
-        root.http-open = index == 8; root.captures-open = index == 9;
+        root.http-open = index == 8; root.captures-open = index == 9; root.execution-open = index == 11; root.flows-open = index == 12;
     }
     in-out property <length> side-panel-width: 310px;
     in-out property <length> projects-panel-width: 280px;
@@ -635,11 +706,11 @@ export component AppWindow inherits Window {
     private property <bool> panel-dragging: false;
     private property <length> sidebar-reservation: root.sidebar-progress * (root.panel-width + 12px);
     function update-workspace-layout() {
-        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? 292px : 0px)));
+        root.projects-max-width = max(260px, min(560px, root.width - 360px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open || root.execution-open || root.flows-open) ? 292px : 0px)));
         root.projects-width = root.projects-compact ? 72px : clamp(root.projects-panel-width, 260px, root.projects-max-width);
         root.panel-max-width = max(280px, min(800px, root.width - root.projects-width - 360px));
         root.panel-width = clamp(root.side-panel-width, 280px, root.panel-max-width);
-        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? root.panel-width + 12px : 0px) < 520px;
+        root.compact-composer = root.width - root.projects-width - 92px - ((root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open || root.execution-open || root.flows-open) ? root.panel-width + 12px : 0px) < 520px;
     }
     changed width => { root.update-workspace-layout(); }
     changed side-panel-width => { root.update-workspace-layout(); }
@@ -658,7 +729,7 @@ export component AppWindow inherits Window {
     in-out property <bool> git-dirty: false;
     in-out property <string> git-status: "Abrí un proyecto para consultar Git.";
     in-out property <[GitRow]> git-files;
-    changed git-open => { if root.git-open { root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-git(); } root.update-workspace-layout(); }
+    changed git-open => { if root.git-open { root.execution-open = false; root.flows-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-git(); } root.update-workspace-layout(); }
     changed git-project => {
         root.search-rows = [];
         root.search-status = "Busca en el proyecto seleccionado.";
@@ -696,14 +767,17 @@ export component AppWindow inherits Window {
         root.lint-rows = []; root.lint-all-rows = []; root.lint-tools = []; root.lint-config-open = false;
         if root.lint-open { root.detect-lint(); }
         if root.terminal-open { root.refresh-terminal(); }
+        root.execution-config-open = false; root.execution-android-open = false; root.execution-android-device = ""; root.execution-device-ids = []; root.execution-device-names = [];
+        if root.execution-open { root.load-execution(); }
+        if root.flows-open { root.refresh-flows(); }
         if root.usage-open { root.refresh-usage(); }
-        root.http-variables-open = false;
+        root.http-variables-open = false; root.http-rename-open = false;
         if root.http-open { root.load-http(); } if root.captures-open { root.refresh-captures(); }
     }
     in-out property <bool> files-open: false;
     private property <float> git-progress: root.git-open ? 1 : 0;
     private property <float> files-progress: root.files-open ? 1 : 0;
-    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open) ? 1 : 0;
+    private property <float> sidebar-progress: (root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open || root.execution-open || root.flows-open) ? 1 : 0;
     animate git-progress, files-progress, logcat-progress, database-progress, docker-progress, lint-progress, terminal-progress, http-progress, captures-progress { duration: 180ms; easing: ease-out; }
     in-out property <bool> database-open: false;
     private property <float> database-progress: root.database-open ? 1 : 0;
@@ -721,7 +795,7 @@ export component AppWindow inherits Window {
     callback refresh-database(bool);
     callback browse-database-schema();
     changed database-open => {
-        if root.database-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-database(true); }
+        if root.database-open { root.execution-open = false; root.flows-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-database(true); }
         root.update-workspace-layout();
     }
     in-out property <bool> docker-open: false;
@@ -736,7 +810,7 @@ export component AppWindow inherits Window {
     callback refresh-docker();
     callback docker-action(string, string);
     changed docker-open => {
-        if root.docker-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.docker-logs-open = false; root.refresh-docker(); }
+        if root.docker-open { root.execution-open = false; root.flows-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.docker-logs-open = false; root.refresh-docker(); }
         root.update-workspace-layout();
     }
     in-out property <bool> lint-open: false;
@@ -763,9 +837,41 @@ export component AppWindow inherits Window {
     callback open-problem-file(string, int);
     callback detect-lint(); callback run-lint(); callback stop-lint(); callback save-lint-config(); callback open-lint-logs();
     changed lint-open => {
-        if root.lint-open { root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.detect-lint(); }
+        if root.lint-open { root.execution-open = false; root.flows-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.detect-lint(); }
         root.update-workspace-layout();
     }
+
+    in-out property <bool> flows-open: false;
+    in property <[string]> flow-names;
+    in-out property <int> flow-index: -1;
+    in property <[BrowserStepRow]> flow-steps;
+    in-out property <string> flow-name;
+    in-out property <string> flow-base-url;
+    in-out property <string> flow-path;
+    in property <string> flow-notice;
+    in property <string> flow-detail;
+    in property <image> flow-image;
+    in-out property <int> flow-assert-kind: 0;
+    in-out property <string> flow-assert-target;
+    in-out property <string> flow-assert-value;
+    in property <string> flow-code;
+    in property <string> flow-export-target;
+    in-out property <bool> flow-preview-open: false;
+    callback refresh-flows(); callback pick-flow(int); callback pick-flow-step(int);
+    callback toggle-flow-step(int); callback add-flow-assertion();
+    callback preview-flow-test(); callback save-flow-test();
+    changed flows-open => {
+        root.flow-preview-open = false;
+        if root.flows-open {
+            root.git-open = false; root.files-open = false; root.terminal-open = false;
+            root.lint-open = false; root.docker-open = false; root.database-open = false;
+            root.logcat-open = false; root.http-open = false; root.captures-open = false;
+            root.search-open = false; root.execution-open = false;
+            root.refresh-flows();
+        }
+        root.update-workspace-layout();
+    }
+
     in-out property <bool> http-open: false;
     in-out property <bool> captures-open: false;
     private property <float> captures-progress: root.captures-open ? 1 : 0;
@@ -778,7 +884,7 @@ export component AppWindow inherits Window {
     callback refresh-captures(); callback pick-capture(int);
     changed captures-scope => { if root.captures-open { root.refresh-captures(); } }
     changed captures-open => {
-        if root.captures-open {
+        if root.captures-open { root.execution-open = false; root.flows-open = false;
             root.git-open = false; root.files-open = false; root.logcat-open = false;
             root.database-open = false; root.docker-open = false; root.lint-open = false;
             root.terminal-open = false; root.http-open = false;
@@ -800,10 +906,19 @@ export component AppWindow inherits Window {
     in property <int> http-request-index;
     in property <string> http-request-id;
     in-out property <string> http-request-name;
+    in-out property <bool> http-rename-open: false;
+    private property <bool> http-rename-collection: false;
+    in-out property <string> http-rename-name;
     in-out property <int> http-method-index: 0;
     in-out property <string> http-url;
     in-out property <string> http-headers;
     in-out property <string> http-body;
+    in property <int> http-saved-method-index;
+    in property <string> http-saved-url;
+    in property <string> http-saved-headers;
+    in property <string> http-saved-body;
+    in property <bool> http-saved-exposed;
+    private property <bool> http-dirty: root.http-method-index != root.http-saved-method-index || root.http-url != root.http-saved-url || root.http-headers != root.http-saved-headers || root.http-body != root.http-saved-body || root.http-exposed != root.http-saved-exposed;
     in-out property <int> http-timeout: 30;
     in-out property <int> http-request-view: 0;
     in-out property <int> http-response-view: 0;
@@ -818,7 +933,7 @@ export component AppWindow inherits Window {
     changed http-response-view => { root.show-http-response(); }
     open-http => { root.http-open = true; }
     changed http-open => {
-        if root.http-open {
+        if root.http-open { root.execution-open = false; root.flows-open = false;
             root.captures-open = false; root.search-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false;
             if root.http-loaded-project != root.git-project { root.load-http(); }
         }
@@ -840,6 +955,38 @@ export component AppWindow inherits Window {
     changed usage-view => { root.show-usage(); }
     changed usage-selected-chat => { if root.usage-open && root.usage-scope == 1 { root.refresh-usage(); } if root.captures-open { root.refresh-captures(); } }
 
+    in-out property <bool> execution-open: false;
+    in-out property <bool> execution-config-open: false;
+    in-out property <bool> execution-android-open: false;
+    in property <bool> execution-busy: false;
+    in property <[string]> execution-names;
+    in-out property <int> execution-index: 0;
+    in property <[string]> execution-run-names;
+    in property <[string]> execution-run-ids;
+    in-out property <int> execution-run-index: 0;
+    in-out property <bool> execution-stderr: false;
+    in property <string> execution-output;
+    in property <string> execution-message;
+    in-out property <string> execution-config-json;
+    in-out property <string> execution-android-module: "app";
+    in-out property <string> execution-android-variant: "Debug";
+    in-out property <string> execution-android-device;
+    in-out property <string> execution-android-component;
+    callback load-execution(); callback save-execution(); callback detect-execution();
+    in-out property <[string]> execution-device-names;
+    in-out property <[string]> execution-device-ids;
+    in-out property <int> execution-device-index: 0;
+    callback execution-devices(); callback choose-execution-device();
+    callback save-android-execution(); callback execution-action(string);
+    changed execution-open => {
+        if root.execution-open { root.flows-open = false;
+            root.git-open = false; root.files-open = false; root.terminal-open = false;
+            root.lint-open = false; root.docker-open = false; root.database-open = false;
+            root.logcat-open = false; root.http-open = false; root.captures-open = false; root.search-open = false;
+            root.load-execution();
+        }
+        root.update-workspace-layout();
+    }
     in-out property <bool> terminal-open: false;
     private property <float> terminal-progress: root.terminal-open ? 1 : 0;
     in property <bool> terminal-busy: false;
@@ -855,7 +1002,7 @@ export component AppWindow inherits Window {
     callback start-terminal(); callback close-terminal(); callback refresh-terminal();
     callback terminal-key(string, bool, bool, bool); callback terminal-scroll(int);
     changed terminal-open => {
-        if root.terminal-open { root.http-open = false; root.captures-open = false; root.search-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
+        if root.terminal-open { root.execution-open = false; root.flows-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.git-open = false; root.files-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; }
         root.refresh-terminal(); root.update-workspace-layout();
     }
     in property <bool> explorer-busy: false;
@@ -878,12 +1025,12 @@ export component AppWindow inherits Window {
     callback select-file(string);
     callback explorer-event(string);
     callback open-project-folder();
-    changed files-open => { if root.files-open { root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
+    changed files-open => { if root.files-open { root.execution-open = false; root.flows-open = false; root.git-open = false; root.logcat-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-explorer(false); } root.update-workspace-layout(); }
 
     in-out property <bool> logcat-open: false;
     private property <float> logcat-progress: root.logcat-open ? 1 : 0;
     changed logcat-open => {
-        if root.logcat-open { root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-logcat-devices(); }
+        if root.logcat-open { root.execution-open = false; root.flows-open = false; root.git-open = false; root.files-open = false; root.database-open = false; root.docker-open = false; root.lint-open = false; root.terminal-open = false; root.http-open = false; root.captures-open = false; root.search-open = false; root.refresh-logcat-devices(); }
         else { root.stop-logcat(); }
         root.update-workspace-layout();
     }
@@ -982,6 +1129,8 @@ export component AppWindow inherits Window {
                                 item: item; compact: root.projects-compact;
                                 height: root.projects-compact ? 44px : item.project ? 42px : 36px;
                                 clicked => { root.projects-hover-title = ""; root.select-row(item.id); }
+                                close-tab => { root.close-tab(item.id); }
+                                delete-chat => { root.delete-chat(item.id); }
                                 hovered(title, y) => { root.projects-hover-title = title; root.projects-hover-y = y; }
                             }
                             Rectangle { vertical-stretch: 1; }
@@ -1104,7 +1253,13 @@ export component AppWindow inherits Window {
                                 border-color: tab.selected && !root.file-preview-open && !root.usage-open ? #7970ff : #29364b;
                                 animate background, border-color { duration: 120ms; easing: ease-out; }
                                 Text { x: 10px; width: parent.width - 48px; height: parent.height; text: tab.title; color: #e3e7f3; overflow: elide; vertical-alignment: center; }
-                                TouchArea { width: parent.width - 36px; height: parent.height; clicked => { root.select-row(tab.id); } }
+                                ChatTouch {
+                                    width: parent.width - 36px; height: parent.height;
+                                    chat: !tab.id.starts-with("p");
+                                    open => { root.select-row(tab.id); }
+                                    close-tab => { root.close-tab(tab.id); }
+                                    delete-chat => { root.delete-chat(tab.id); }
+                                }
                                 Rectangle {
                                     x: parent.width - 32px; y: 6px; width: 28px; height: 28px;
                                     border-radius: 5px;
@@ -1205,7 +1360,7 @@ export component AppWindow inherits Window {
                         HorizontalBox {
                             padding: 0px; height: 28px;
                             Text { text: root.chat-title; color: #f0f2fa; font-size: 18px; font-weight: 600; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-                            Button { text: "Logs"; height: 28px; width: 60px; enabled: root.has-chat; clicked => { root.open-logs(); } }
+                            IconButton { width: 28px; height: 28px; icon: @image-url("assets/logcat.svg"); label: "Ver logs del chat"; enabled: root.has-chat; clicked => { root.open-logs(); } }
                         }
                         Rectangle { height: 1px; background: #2b384e; }
                         VerticalBox {
@@ -1236,21 +1391,24 @@ export component AppWindow inherits Window {
                                         measure-requested => { root.chat-measure-requested(); }
                                     }
                                 }
+
                             }
-                                if root.has-chat && root.chat-running && root.approval-description == "" && !root.file-preview-open && !root.usage-open && !root.project-overview : Rectangle {
-                                    height: 42px; vertical-stretch: 0; horizontal-stretch: 1;
-                                    Rectangle {
-                                        x: 0px; y: 0px; width: 76px; height: 42px;
-                                        background: #1c2836; border-radius: 10px;
-                                        accessible-role: text;
-                                        accessible-label: "El agente está trabajando o esperando una herramienta";
-                                        for index in [0, 1, 2] : Rectangle {
-                                            x: 18px + index * 16px; y: 18px - 2px * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg); width: 7px; height: 7px;
-                                            border-radius: 3.5px; background: #b7afff;
-                                            opacity: 0.65 + 0.35 * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg);
-                                        }
-                                    }
+                        }
+                        if root.has-chat && root.chat-running && root.approval-description == "" && !root.file-preview-open && !root.usage-open && !root.project-overview : Rectangle {
+                            // Stretch in the parent layout. Reading the sibling
+                            // ListView's allocated width here recurses into that layout.
+                            height: 42px; horizontal-stretch: 1; vertical-stretch: 0;
+                            Rectangle {
+                                x: 0px; y: 0px; width: 76px; height: 42px;
+                                background: #1c2836; border-radius: 10px;
+                                accessible-role: text;
+                                accessible-label: "El agente está trabajando o esperando una herramienta";
+                                for index in [0, 1, 2] : Rectangle {
+                                    x: 18px + index * 16px; y: 18px - 2px * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg); width: 7px; height: 7px;
+                                    border-radius: 3.5px; background: #b7afff;
+                                    opacity: 0.65 + 0.35 * Math.sin(360deg * mod(animation-tick(), 1400ms) / 1400ms - index * 60deg);
                                 }
+                            }
                         }
                         if root.notice != "" : Text { text: root.notice; color: #a6b4cb; wrap: word-wrap; font-size: 12px; vertical-stretch: 0; }
                         if root.can-retry-message : Button {
@@ -1736,6 +1894,52 @@ export component AppWindow inherits Window {
         }
     }
 
+
+    if root.flows-open : Rectangle {
+        x: root.width - self.width - 14px; y: 58px;
+        width: root.panel-width; height: root.height - 72px;
+        clip: true; background: #172332; border-radius: 10px; border-width: 1px; border-color: #354460;
+        VerticalBox {
+            padding: 12px; spacing: 5px;
+            HorizontalBox {
+                height: 28px;
+                Text { text: "Navegador / Flujos"; color: #e3e7f3; font-size: 16px; horizontal-stretch: 1; }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/refresh.svg"); label: "Actualizar flujos (descarta ediciones locales)"; clicked => { root.refresh-flows(); } }
+            }
+            ComboBox { height: 32px; model: root.flow-names; current-index <=> root.flow-index; selected => { root.pick-flow(self.current-index); } }
+            LineEdit { height: 32px; text <=> root.flow-name; placeholder-text: "Nombre del test"; }
+            LineEdit { height: 32px; text <=> root.flow-base-url; placeholder-text: "URL base (FLOW_BASE_URL)"; }
+            LineEdit { height: 32px; text <=> root.flow-path; placeholder-text: "Ruta relativa: tests/flujo.spec.ts"; }
+            Text { text: root.flow-notice; color: #91a0bc; font-size: 10px; wrap: word-wrap; max-height: 48px; overflow: elide; }
+            ListView {
+                min-height: 70px; vertical-stretch: 1;
+                for step in root.flow-steps : Rectangle {
+                    height: 58px; background: #101822;
+                    HorizontalBox {
+                        padding: 4px; spacing: 4px;
+                        CheckBox { width: 28px; checked: step.included; toggled => { root.toggle-flow-step(step.index); } }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            VerticalBox {
+                                padding: 0px; spacing: 2px;
+                                Text { text: step.title; color: #e3e7f3; font-size: 11px; overflow: elide; }
+                                Text { text: step.detail; color: #91a0bc; font-size: 10px; overflow: elide; }
+                            }
+                            TouchArea { clicked => { root.pick-flow-step(step.index); } }
+                        }
+                    }
+                }
+            }
+            Text { text: root.flow-detail; color: #91a0bc; font-size: 10px; wrap: word-wrap; max-height: 44px; overflow: elide; }
+            Rectangle { height: 90px; background: #101822; Image { width: parent.width; height: parent.height; source: root.flow-image; image-fit: contain; } }
+            ComboBox { height: 28px; model: ["Texto esperado", "URL esperada", "Elemento visible"]; current-index <=> root.flow-assert-kind; }
+            if root.flow-assert-kind == 2 : LineEdit { height: 28px; text <=> root.flow-assert-target; placeholder-text: "Selector CSS estable"; }
+            if root.flow-assert-kind != 2 : LineEdit { height: 28px; text <=> root.flow-assert-value; placeholder-text: "Valor esperado"; }
+            Button { height: 28px; text: "Añadir verificación al final"; enabled: root.flow-steps.length > 0; clicked => { root.add-flow-assertion(); } }
+            Button { height: 32px; text: "Previsualizar test…"; enabled: root.flow-steps.length > 0; clicked => { root.preview-flow-test(); } }
+        }
+    }
+
     // Resize the panel and workspace together, preserving a usable chat width.
     if root.captures-open || root.captures-progress > 0 : Rectangle {
         x: root.width - self.width - 14px + (1 - root.captures-progress) * (self.width + 14px);
@@ -1781,42 +1985,43 @@ export component AppWindow inherits Window {
                 height: 28px; padding: 0px; spacing: 4px;
                 Image { source: @image-url("assets/http.svg"); width: 18px; height: 18px; }
                 Text { text: "HTTP"; color: #e3e7f3; font-size: 17px; horizontal-stretch: 1; vertical-alignment: center; }
-                IconButton { width: 28px; height: 28px; icon: @image-url("assets/settings.svg"); label: "Variables del proyecto"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("variables"); } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/settings.svg"); label: "Variables y timeout del proyecto"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("variables"); } }
                 IconButton { width: 28px; height: 28px; icon: @image-url("assets/folder.svg"); label: "Abrir respuestas guardadas"; clicked => { root.open-http-results(); } }
             }
             HorizontalBox {
                 height: 32px; padding: 0px; spacing: 4px;
-                ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-collections; current-index <=> root.http-collection-index; enabled: !root.http-busy; selected => { root.pick-http-collection(self.current-index); } }
-                IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Nueva colección"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("collection"); } }
-                IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar colección"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("delete-collection"); } }
+                ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-request-names; current-index: root.http-request-index; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; selected => { if self.current-index == root.http-requests.length { root.http-action("request"); } else { root.pick-http-request(root.http-requests[self.current-index].id); } } }
+                IconButton { width: 28px; height: 28px; icon: @image-url("assets/edit.svg"); label: "Editar request"; enabled: !root.http-busy && root.http-request-id != ""; clicked => { root.http-rename-collection = false; root.http-rename-name = root.http-request-name; root.http-rename-open = true; } }
+                if root.http-dirty : IconButton { width: 28px; height: 28px; icon: @image-url("assets/diskette.svg"); label: "Guardar cambios"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("save"); } }
             }
-            LineEdit { height: 32px; text <=> root.http-collection-name; placeholder-text: "Nombre de colección"; enabled: !root.http-busy && root.http-collections.length > 0; }
-            CheckBox { text: "Exponer a agentes"; checked <=> root.http-exposed; enabled: !root.http-busy && root.http-collections.length > 0; toggled => { root.http-notice = "Guardá para aplicar la exposición a agentes."; } }
-            HorizontalBox {
-                height: 32px; padding: 0px; spacing: 4px;
-                ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-request-names; current-index: root.http-request-index; enabled: !root.http-busy; selected => { root.pick-http-request(root.http-requests[self.current-index].id); } }
-                IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Nueva request"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("request"); } }
-                IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar request"; enabled: !root.http-busy && root.http-request-id != ""; clicked => { root.http-action("delete"); } }
-            }
-            LineEdit { height: 32px; text <=> root.http-request-name; placeholder-text: "Nombre de la request"; enabled: root.http-request-id != "" && !root.http-busy; }
-            LineEdit { height: 32px; text <=> root.http-url; placeholder-text: "{{BASE_URL}}/ruta"; enabled: !root.http-busy; }
             HorizontalBox {
                 height: 32px; padding: 0px; spacing: 6px;
                 ComboBox { width: 90px; height: 32px; model: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]; current-index <=> root.http-method-index; enabled: !root.http-busy; }
-                SpinBox { width: 65px; height: 32px; minimum: 1; maximum: 120; value <=> root.http-timeout; enabled: !root.http-busy; accessible-label: "Timeout en segundos"; }
-                Button { height: 32px; min-width: 0px; horizontal-stretch: 1; text: root.http-busy ? "Cancelar" : "Enviar"; enabled: root.http-busy || root.http-request-id != ""; clicked => { if root.http-busy { root.cancel-http(); } else { root.send-http(); } } }
+                LineEdit { height: 32px; min-width: 0px; horizontal-stretch: 1; text <=> root.http-url; placeholder-text: "{{BASE_URL}}/ruta"; enabled: !root.http-busy; }
+                IconButton { width: 32px; height: 32px; icon: root.http-busy ? @image-url("assets/stop.svg") : @image-url("assets/send.svg"); label: root.http-busy ? "Cancelar petición" : "Enviar petición"; enabled: root.http-busy || root.http-request-id != ""; clicked => { if root.http-busy { root.cancel-http(); } else { root.send-http(); } } }
             }
-            HorizontalBox {
-                height: 32px; padding: 0px; spacing: 6px;
-                ComboBox { width: 130px; height: 32px; model: ["Body", "Headers"]; current-index <=> root.http-request-view; }
-                Button { height: 32px; horizontal-stretch: 1; text: "Guardar"; icon: @image-url("assets/check.svg"); enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("save"); } }
-            }
+            HttpSegments { labels: ["Body", "Headers"]; current-index <=> root.http-request-view; }
             if root.http-request-view == 0 : TextEdit { height: 100px; text <=> root.http-body; enabled: !root.http-busy && root.http-request-id != ""; }
             if root.http-request-view == 1 : TextEdit { height: 100px; text <=> root.http-headers; enabled: !root.http-busy && root.http-request-id != ""; }
-            ComboBox { height: 28px; model: ["Respuesta", "Headers"]; current-index <=> root.http-response-view; }
+            if root.http-response-status != "" : HttpSegments { labels: ["Respuesta", "Headers"]; current-index <=> root.http-response-view; }
             Text { text: root.http-response-status; color: #b4aaff; font-size: 10px; overflow: elide; }
             FileViewer { lines: root.http-response-lines; columns: root.http-response-columns; target-line: 0; }
             Text { text: root.http-notice; color: #91a0bc; font-size: 10px; wrap: word-wrap; max-height: 48px; overflow: elide; }
+            Rectangle {
+                vertical-stretch: 0;
+                border-radius: 9px; background: #192534; border-width: 1px; border-color: #34435c;
+                VerticalBox {
+                    padding: 10px; spacing: 6px;
+                    HorizontalBox {
+                        height: 32px; padding: 0px; spacing: 4px;
+                        ComboBox { min-width: 0px; horizontal-stretch: 1; height: 32px; model: root.http-collections; current-index <=> root.http-collection-index; enabled: !root.http-busy; selected => { root.pick-http-collection(self.current-index); } }
+                        IconButton { width: 28px; height: 28px; icon: @image-url("assets/edit.svg"); label: "Renombrar colección"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-rename-collection = true; root.http-rename-name = root.http-collection-name; root.http-rename-open = true; } }
+                        IconButton { width: 28px; height: 28px; icon: @image-url("assets/plus.svg"); label: "Nueva colección"; enabled: root.http-ready && !root.http-busy; clicked => { root.http-action("collection"); } }
+                        IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar colección"; enabled: root.http-ready && !root.http-busy && root.http-collections.length > 0; clicked => { root.http-action("delete-collection"); } }
+                    }
+                    CheckBox { text: "Exponer a agentes"; checked <=> root.http-exposed; enabled: !root.http-busy && root.http-collections.length > 0; toggled => { root.http-notice = "Guardá para aplicar la exposición a agentes."; } }
+                }
+            }
         }
     }
     if root.terminal-open || root.terminal-progress > 0 : Rectangle {
@@ -1851,6 +2056,51 @@ export component AppWindow inherits Window {
                 }
             }
             Text { text: root.terminal-status; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 56px; overflow: elide; }
+        }
+    }
+
+    if root.execution-open : Rectangle {
+        x: root.width - self.width - 14px; y: 58px; width: root.panel-width; height: root.height - 72px;
+        background: #121d29; border-color: #384561; border-width: 1px; border-radius: 10px;
+        VerticalBox {
+            padding: 12px; spacing: 8px;
+            Text { text: "Ejecución del proyecto"; color: #e3e7f3; font-size: 15px; font-weight: 600; }
+            HorizontalBox {
+                spacing: 4px;
+                ComboBox { model: root.execution-names; current-index <=> root.execution-index; enabled: !root.execution-busy; horizontal-stretch: 1; min-width: 0px; }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/play.svg"); label: "Iniciar ejecución"; enabled: !root.execution-busy && root.execution-names.length > 0; clicked => { root.execution-action("start"); } }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/refresh.svg"); label: "Reiniciar ejecución"; enabled: !root.execution-busy && root.execution-names.length > 0; clicked => { root.execution-action("restart"); } }
+                IconButton { width: 32px; height: 32px; icon: @image-url("assets/stop.svg"); label: "Detener ejecución"; enabled: !root.execution-busy && root.execution-run-ids.length > 0; clicked => { root.execution-action("stop"); } }
+            }
+            HorizontalBox {
+                spacing: 4px;
+                Button { text: "Detectar"; enabled: !root.execution-busy && root.git-project != ""; clicked => { root.detect-execution(); } }
+                Button { text: "Configurar"; clicked => { root.execution-config-open = !root.execution-config-open; root.execution-android-open = false; } }
+                Button { text: "Android"; clicked => { root.execution-android-open = !root.execution-android-open; root.execution-config-open = false; } }
+            }
+            if root.execution-config-open : VerticalBox {
+                spacing: 4px;
+                Text { text: "Array JSON: id, name, program, args, directory, env. Las variables pueden contener secretos; no se envían al agente al listar."; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+                TextEdit { height: 180px; text <=> root.execution-config-json; }
+                Button { text: "Guardar configuraciones"; enabled: !root.execution-busy; clicked => { root.save-execution(); } }
+            }
+            if root.execution-android-open : VerticalBox {
+                spacing: 4px;
+                Text { text: "Seleccioná arriba una tarea Gradle Android. Guardar crea tareas para la variante y el dispositivo; no las ejecuta."; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
+                LineEdit { text <=> root.execution-android-module; placeholder-text: "Módulo (app o feature:app)"; }
+                LineEdit { text <=> root.execution-android-variant; placeholder-text: "Variante (Debug, DemoDebug…)"; }
+                ComboBox { model: root.execution-device-names; current-index <=> root.execution-device-index; selected(value) => { root.choose-execution-device(); } }
+                Button { text: "Actualizar dispositivos"; enabled: !root.execution-busy; clicked => { root.execution-devices(); } }
+                LineEdit { text <=> root.execution-android-device; placeholder-text: "Serial de adb (vacío: selección automática)"; }
+                LineEdit { text <=> root.execution-android-component; placeholder-text: "paquete/.MainActivity (para lanzar/detener app)"; }
+                Button { text: "Guardar tareas Android"; enabled: !root.execution-busy; clicked => { root.save-android-execution(); } }
+                Button { text: "Abrir Logcat"; clicked => { root.select-panel(7); } }
+            }
+            Text { text: "Ejecuciones compartidas con el agente"; color: #bcb4ff; font-size: 12px; }
+            ComboBox { model: root.execution-run-names; current-index <=> root.execution-run-index; }
+            CheckBox { text: "Mostrar stderr (stdout por defecto)"; checked <=> root.execution-stderr; }
+            TextEdit { text: root.execution-output; read-only: true; vertical-stretch: 1; min-height: 60px; }
+            Text { text: root.execution-message; color: #91a0bc; font-size: 11px; wrap: word-wrap; max-height: 70px; overflow: elide; }
         }
     }
 
@@ -1912,13 +2162,13 @@ export component AppWindow inherits Window {
             ListView {
                 horizontal-scrollbar-policy: always-off;
                 for problem in root.lint-rows : Rectangle {
-                    height: 112px;
-                    Rectangle {
-                        x: 0px; y: 0px; width: parent.width; height: 106px; background: problem-touch.has-hover ? #263246 : #1b2735; border-radius: 6px;
+                    height: problem-card.height + 6px;
+                    problem-card := Rectangle {
+                        x: 0px; y: 0px; width: parent.width; height: problem-location.y + problem-location.height + 9px; background: problem-touch.has-hover ? #263246 : #1b2735; border-radius: 6px;
                         Rectangle { x: 0px; y: 7px; width: 3px; height: parent.height - 14px; background: problem.error ? #ef939f : #e3bd7b; border-radius: 2px; }
                         Text { x: 10px; y: 6px; width: parent.width - 20px; height: 19px; text: (problem.error ? "Error" : "Advertencia") + (problem.code == "" ? "" : " · " + problem.code); color: problem.error ? #ef939f : #e3bd7b; font-size: 11px; overflow: elide; }
-                        Text { x: 10px; y: 27px; width: parent.width - 20px; height: 44px; text: problem.message; color: #dde3ef; font-size: 12px; wrap: word-wrap; overflow: elide; }
-                        Text { x: 10px; y: 78px; width: parent.width - 20px; height: 19px; text: problem.path + (problem.line > 0 ? ":" + problem.line + ":" + problem.column : ""); color: #91a0bc; font-size: 10px; overflow: elide; }
+                        problem-message := Text { x: 10px; y: 27px; width: parent.width - 20px; height: max(16px, self.preferred-height); text: problem.message; color: #dde3ef; font-size: 12px; wrap: word-wrap; overflow: elide; }
+                        problem-location := Text { x: 10px; y: problem-message.y + problem-message.height + 6px; width: parent.width - 20px; height: 19px; text: problem.path + (problem.line > 0 ? ":" + problem.line + ":" + problem.column : ""); color: #91a0bc; font-size: 10px; overflow: elide; }
                         problem-touch := TouchArea { enabled: problem.path != ""; clicked => { root.open-problem-file(problem.path, problem.line); } }
                     }
                 }
@@ -2106,14 +2356,14 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.git-open || root.files-open || root.logcat-open || root.database-open || root.docker-open || root.lint-open || root.terminal-open || root.http-open || root.captures-open || root.search-open : Rectangle {
+    if root.active-panel-index != 0 : Rectangle {
         x: root.width - root.panel-width - 17px; y: 58px;
         width: 6px; height: root.height - 72px;
         panel-resize := TouchArea {
             private property <length> start-x;
             private property <length> start-width;
             mouse-cursor: ew-resize;
-            enabled: root.search-open || max(max(root.http-progress, root.captures-progress), max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
+            enabled: root.search-open || root.execution-open || max(max(root.http-progress, root.captures-progress), max(root.terminal-progress, max(root.lint-progress, max(root.docker-progress, max(root.database-progress, max(root.git-progress, max(root.files-progress, root.logcat-progress))))))) >= 0.99;
             pointer-event(event) => {
                 if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
                     self.start-x = parent.x + self.mouse-x;
@@ -2176,6 +2426,28 @@ export component AppWindow inherits Window {
         }
     }
 
+
+    if root.flows-open && root.flow-preview-open : Rectangle {
+        width: parent.width; height: parent.height; background: #080d16e8;
+        TouchArea { clicked => { root.flow-preview-open = false; } }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(parent.width - 48px, 960px); height: parent.height - 80px;
+            background: #172332; border-radius: 10px;
+            TouchArea { }
+            VerticalBox {
+                padding: 16px; spacing: 10px;
+                Text { text: "Guardar test: " + root.flow-export-target; color: #e3e7f3; font-size: 16px; overflow: elide; }
+                Text { text: "Revisá selectores y verificaciones. Los valores fill requieren FLOW_VALUE_*. Se crea un archivo nuevo; no se sobrescriben tests ni se ejecuta código."; color: #91a0bc; wrap: word-wrap; }
+                TextEdit { text: root.flow-code; read-only: true; vertical-stretch: 1; }
+                HorizontalBox {
+                    Button { text: "Cancelar"; clicked => { root.flow-preview-open = false; } }
+                    Button { text: "Confirmar y guardar en el proyecto"; clicked => { root.save-flow-test(); } }
+                }
+            }
+        }
+    }
+
     if root.captures-open && root.capture-preview-open : Rectangle {
         width: parent.width; height: parent.height; background: #080d16e8;
         TouchArea { clicked => { root.capture-preview-open = false; } }
@@ -2202,13 +2474,39 @@ export component AppWindow inherits Window {
             background: #192534; border-radius: 12px; border-width: 1px; border-color: #6260d7;
             VerticalBox {
                 padding: 24px; spacing: 12px;
-                Text { text: "Variables HTTP del proyecto"; color: #e3e7f3; font-size: 20px; }
+                Text { text: "Configuración HTTP del proyecto"; color: #e3e7f3; font-size: 20px; }
                 Text { text: "Objeto JSON con valores de texto. Usá {{NOMBRE}} en URL, headers o body. Los valores se guardan fuera del repositorio y no se exponen a los agentes."; color: #91a0bc; font-size: 12px; wrap: word-wrap; }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 8px;
+                    Text { text: "Timeout del proyecto (segundos)"; color: #e3e7f3; vertical-alignment: center; horizontal-stretch: 1; }
+                    SpinBox { width: 80px; height: 32px; minimum: 1; maximum: 120; value <=> root.http-timeout; accessible-label: "Timeout del proyecto en segundos"; }
+                }
                 TextEdit { text <=> root.http-variables-json; }
                 Text { text: root.http-notice; color: #91a0bc; font-size: 11px; wrap: word-wrap; }
                 HorizontalBox { padding: 0px; spacing: 8px;
                     Button { text: "Cancelar"; clicked => { root.http-variables-open = false; } }
-                    Button { text: "Guardar variables"; clicked => { root.http-action("save-variables"); } }
+                    Button { text: "Guardar configuración"; clicked => { root.http-action("save-variables"); } }
+                }
+            }
+        }
+    }
+    if root.http-rename-open : Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height; background: #080d18.with-alpha(0.87);
+        TouchArea { }
+        Rectangle {
+            width: min(420px, root.width - 40px); height: 180px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: #192534; border-radius: 12px; border-width: 1px; border-color: #6260d7;
+            VerticalBox {
+                padding: 20px; spacing: 10px;
+                Text { text: root.http-rename-collection ? "Renombrar colección" : "Editar request"; color: #e3e7f3; font-size: 18px; }
+                LineEdit { text <=> root.http-rename-name; placeholder-text: "Nombre"; accessible-label: "Nuevo nombre"; }
+                Text { text: root.http-notice; color: #91a0bc; font-size: 11px; overflow: elide; }
+                HorizontalBox {
+                    padding: 0px; spacing: 8px;
+                    if !root.http-rename-collection : IconButton { width: 28px; height: 28px; icon: @image-url("assets/minus.svg"); label: "Eliminar request"; enabled: !root.http-busy && root.http-request-id != ""; clicked => { root.http-action("delete"); } }
+                    Button { text: "Cancelar"; clicked => { root.http-rename-open = false; } }
+                    Button { text: "Guardar"; enabled: !root.http-busy; clicked => { root.http-action(root.http-rename-collection ? "rename-collection" : "rename-request"); } }
                 }
             }
         }

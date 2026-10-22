@@ -144,8 +144,12 @@ pub fn argument_metrics(name: &str, arguments: &Value) -> Value {
         "http_request" | "http_collections" => {
             json!({"collection":short(arguments["collection"].as_str().unwrap_or("")),"request":short(arguments["request"].as_str().unwrap_or(""))})
         }
+        "read_file_ranges" => json!({"range_count":arguments["ranges"].as_array().map(Vec::len)}),
         "write_file" => {
             json!({"path":short(arguments["path"].as_str().unwrap_or("")),"content_bytes":arguments["content"].as_str().map(str::len)})
+        }
+        "powershell_run" => {
+            json!({"script_bytes":arguments["script"].as_str().map(str::len),"timeout_seconds":arguments["timeout_seconds"]})
         }
         "run_command" => {
             json!({"program":short(arguments["program"].as_str().unwrap_or("")),"argument_count":arguments["args"].as_array().map(Vec::len),"timeout_seconds":arguments["timeout_seconds"]})
@@ -161,6 +165,12 @@ pub fn argument_metrics(name: &str, arguments: &Value) -> Value {
 /// Arguments are quoted as JSON strings when necessary to preserve boundaries;
 /// this is a display of argv, not a shell script.
 pub fn tool_display_summary(name: &str, arguments: &Value, summary: &str) -> String {
+    if name == "powershell_run" {
+        return format!(
+            "{summary}\n\nScript PowerShell:\n{}",
+            arguments["script"].as_str().unwrap_or("")
+        );
+    }
     if name != "run_command" {
         return summary.into();
     }
@@ -264,8 +274,13 @@ pub fn tool_summary(
     let label = match name {
         "list_files" => "Listar carpeta",
         "read_file" => "Leer archivo",
+        "read_file_ranges" => "Leer fragmentos",
+        "search_files" => "Buscar en archivos",
+        "file_outline" => "Esquema del archivo",
+        "git_read" => "Consultar Git",
         "write_file" => "Guardar archivo",
         "run_command" => "Ejecutar comando",
+        "powershell_run" => "Ejecutar PowerShell",
         "inspect_result" => "Consultar resultado",
         "http_collections" => "Colecciones HTTP",
         "http_request" => "Request HTTP",

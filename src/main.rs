@@ -16,11 +16,10 @@ use std::{
 slint::include_modules!();
 mod attachments_ui;
 mod captures_ui;
+mod browser_flows_ui;
 mod docker_ui;
+mod execution_ui;
 mod explorer_ui;
-mod search_ui;
-mod window_ui;
-mod scroll_profile;
 mod git_ui;
 mod http_ui;
 mod lint_ui;
@@ -29,9 +28,12 @@ mod markdown_ui;
 mod prisma_ui;
 mod project_ui;
 mod queue_ui;
+mod scroll_profile;
+mod search_ui;
 mod tasks_ui;
 mod terminal_ui;
 mod usage_ui;
+mod window_ui;
 
 fn refresh(ui: &AppWindow, state: &AppState) {
     attachments_ui::display(ui, state);
@@ -231,7 +233,9 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .unwrap_or_default(),
     )));
     ui.set_git_project(project.map(|p| p.path.as_str()).unwrap_or("").into());
-    ui.set_title_project_path(window_ui::display_path(project.map(|p| p.path.as_str()).unwrap_or("" )).into());
+    ui.set_title_project_path(
+        window_ui::display_path(project.map(|p| p.path.as_str()).unwrap_or("")).into(),
+    );
     let choices = chat_models(state);
     let model = selected
         .filter(|chat| !chat.model.is_empty())
@@ -276,8 +280,11 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             .is_some_and(|c| matches!(c.state, RunState::Running | RunState::WaitingForPermission)),
     );
     ui.set_approval_description(selected.map(|c| c.approval.as_str()).unwrap_or("").into());
-    ui.set_auto_approve_enabled(state.selected_chat.is_some_and(|id|
-        ui.get_auto_approve_chats().iter().any(|value| value.as_str() == id.to_string())));
+    ui.set_auto_approve_enabled(state.selected_chat.is_some_and(|id| {
+        ui.get_auto_approve_chats()
+            .iter()
+            .any(|value| value.as_str() == id.to_string())
+    }));
     ui.set_token_summary(
         selected
             .map(token_summary)
@@ -342,7 +349,8 @@ fn refresh(ui: &AppWindow, state: &AppState) {
                     MessageRow {
                         blocks,
                         role: role.into(),
-                        summary: body.lines().next().unwrap_or_default().into(), body: body.into(),
+                        summary: body.lines().next().unwrap_or_default().into(),
+                        body: body.into(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -356,9 +364,14 @@ fn refresh(ui: &AppWindow, state: &AppState) {
             rows.remove(rows.row_count() - 1);
         }
         for (index, row) in messages.into_iter().enumerate() {
-            let is_current_chat = state.selected_chat.is_some_and(|id| ui.get_displayed_chat_key().as_str() == id.to_string());
-            if is_current_chat && !row.body.is_empty()
-                && cached_messages.get(index).is_none_or(|old| old.body.is_empty())
+            let is_current_chat = state
+                .selected_chat
+                .is_some_and(|id| ui.get_displayed_chat_key().as_str() == id.to_string());
+            if is_current_chat
+                && !row.body.is_empty()
+                && cached_messages
+                    .get(index)
+                    .is_none_or(|old| old.body.is_empty())
             {
                 animate_chat_entry(ui, index);
             }
@@ -374,20 +387,28 @@ fn refresh(ui: &AppWindow, state: &AppState) {
     } else {
         ui.set_messages(ModelRc::new(VecModel::from(messages)));
     }
-    let key = state.selected_chat.map(|id| id.to_string()).unwrap_or_default();
+    let key = state
+        .selected_chat
+        .map(|id| id.to_string())
+        .unwrap_or_default();
     if ui.get_displayed_chat_key().as_str() != key {
         ui.set_chat_entry_animate(false);
         ui.set_chat_entry_progress(1.0);
         ui.set_chat_entry_index(-1);
         ui.set_displayed_chat_key(key.into());
         scroll_opened_chat(ui);
-    }}
+    }
+}
 
 // Capture proximity before changing rows, including the final (non-running) message.
 fn follow_chat_update(ui: &AppWindow) {
-    if !ui.get_has_chat() || !ui.get_chat_content_visible() || ui.get_chat_follow_pending()
+    if !ui.get_has_chat()
+        || !ui.get_chat_content_visible()
+        || ui.get_chat_follow_pending()
         || (ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() > 80.0
-    { return; }
+    {
+        return;
+    }
     start_chat_scroll(ui, false);
 }
 
@@ -396,27 +417,50 @@ fn start_chat_scroll(ui: &AppWindow, opening: bool) {
     ui.set_chat_scroll_generation(generation);
     ui.set_chat_opening_scroll(opening);
     ui.set_chat_follow_pending(true);
-    settle_chat_scroll(ui.as_weak(), ui.get_displayed_chat_key(), generation, 0, 0, f32::NAN);
+    settle_chat_scroll(
+        ui.as_weak(),
+        ui.get_displayed_chat_key(),
+        generation,
+        0,
+        0,
+        f32::NAN,
+    );
 }
 
 // A virtualized list discovers row heights over several layout passes. Keep
 // following the actual bottom until it settles; never mutate scroll from layout.
 fn settle_chat_scroll(
-    weak: slint::Weak<AppWindow>, key: slint::SharedString, generation: i32,
-    passes: u32, stable: u32, previous_bottom: f32,
+    weak: slint::Weak<AppWindow>,
+    key: slint::SharedString,
+    generation: i32,
+    passes: u32,
+    stable: u32,
+    previous_bottom: f32,
 ) {
     slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
-        let Some(ui) = weak.upgrade() else { return; };
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
         // A timer from a previous tab must not clear a newer tab's pending state.
-        if ui.get_chat_scroll_generation() != generation { return; }
-        if ui.get_displayed_chat_key() != key || !ui.get_has_chat() || !ui.get_chat_content_visible() {
+        if ui.get_chat_scroll_generation() != generation {
+            return;
+        }
+        if ui.get_displayed_chat_key() != key
+            || !ui.get_has_chat()
+            || !ui.get_chat_content_visible()
+        {
             ui.set_chat_follow_pending(false);
             ui.set_chat_opening_scroll(false);
             return;
         }
         let bottom = ui.get_chat_scroll_bottom();
         let stable = if (bottom - previous_bottom).abs() < 0.5
-            && (ui.get_chat_scroll_offset() - bottom).abs() < 1.0 { stable + 1 } else { 0 };
+            && (ui.get_chat_scroll_offset() - bottom).abs() < 1.0
+        {
+            stable + 1
+        } else {
+            0
+        };
         ui.invoke_scroll_chat_to_end();
         if passes >= 59 || (passes >= 11 && stable >= 4) {
             ui.set_chat_follow_pending(false);
@@ -445,7 +489,9 @@ fn animate_chat_entry(ui: &AppWindow, index: usize) {
     });
 }
 fn scroll_opened_chat(ui: &AppWindow) {
-    if !ui.get_has_chat() || !ui.get_chat_content_visible() { return; }
+    if !ui.get_has_chat() || !ui.get_chat_content_visible() {
+        return;
+    }
     start_chat_scroll(ui, true);
 }
 // Text deltas only touch the last row. Navigation and model selectors are stable
@@ -477,7 +523,8 @@ fn refresh_stream_tail(ui: &AppWindow, state: &AppState) {
     let row = MessageRow {
         role: message.role.as_str().into(),
         blocks: markdown_ui::blocks(&message.role, &body),
-        summary: body.lines().next().unwrap_or_default().into(), body: body.into(),
+        summary: body.lines().next().unwrap_or_default().into(),
+        body: body.into(),
     };
     if index < rows.row_count() {
         rows.set_row_data(index, row);
@@ -511,8 +558,11 @@ fn display_message(message: &Message, history: &[serde_json::Value]) -> String {
                     .and_then(|call| call["arguments"].as_str())
                     .and_then(|args| serde_json::from_str::<serde_json::Value>(args).ok())
                     .unwrap_or_default();
-                let summary = ascurra_harness::diagnostics::tool_summary(name, &arguments, reply, None);
-                return ascurra_harness::diagnostics::tool_display_summary(name, &arguments, &summary);
+                let summary =
+                    ascurra_harness::diagnostics::tool_summary(name, &arguments, reply, None);
+                return ascurra_harness::diagnostics::tool_display_summary(
+                    name, &arguments, &summary,
+                );
             }
         }
     }
@@ -690,14 +740,16 @@ fn context_meter(
         (Some(input), Some(capacity)) => {
             let fraction = input as f64 / capacity as f64;
             (
-                format!("Ctx: {} / {} ({:.1}%)", abbreviated_tokens(input), abbreviated_tokens(capacity), fraction * 100.0),
+                format!(
+                    "Ctx: {} / {} ({:.1}%)",
+                    abbreviated_tokens(input),
+                    abbreviated_tokens(capacity),
+                    fraction * 100.0
+                ),
                 fraction.clamp(0.0, 1.0) as f32,
             )
         }
-        (Some(input), None) => (
-            format!("Ctx: {} / ?", abbreviated_tokens(input)),
-            0.0,
-        ),
+        (Some(input), None) => (format!("Ctx: {} / ?", abbreviated_tokens(input)), 0.0),
         (None, Some(capacity)) => (
             format!("Ctx: sin medición / {}", abbreviated_tokens(capacity)),
             0.0,
@@ -707,10 +759,20 @@ fn context_meter(
 }
 
 fn abbreviated_tokens(value: u64) -> String {
-    if value < 1_000 { return value.to_string(); }
-    let (divisor, suffix) = if value >= 999_950 { (1_000_000.0, "M") } else { (1_000.0, "k") };
+    if value < 1_000 {
+        return value.to_string();
+    }
+    let (divisor, suffix) = if value >= 999_950 {
+        (1_000_000.0, "M")
+    } else {
+        (1_000.0, "k")
+    };
     let number = format!("{:.1}", value as f64 / divisor);
-    format!("{}{}", number.trim_end_matches(".0").replace('.', ","), suffix)
+    format!(
+        "{}{}",
+        number.trim_end_matches(".0").replace('.', ","),
+        suffix
+    )
 }
 fn token_summary(chat: &ascurra_harness::domain::Chat) -> String {
     if chat.usage.is_empty() {
@@ -732,7 +794,12 @@ fn token_summary(chat: &ascurra_harness::domain::Chat) -> String {
         } else {
             format!(
                 "{}{}",
-                abbreviated_tokens(values.iter().flatten().fold(0u64, |sum, value| sum.saturating_add(*value))),
+                abbreviated_tokens(
+                    values
+                        .iter()
+                        .flatten()
+                        .fold(0u64, |sum, value| sum.saturating_add(*value))
+                ),
                 if values.iter().any(Option::is_none) {
                     "+?"
                 } else {
@@ -778,10 +845,12 @@ fn save_and_refresh(ui: &AppWindow, state: &mut AppState, store: &Store) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
-    if args
-        .get(1)
-        .is_some_and(|arg| arg == "--check-renderer" || arg == "--measure-renderer")
-    {
+    if args.get(1).is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "--check-renderer" | "--measure-renderer" | "--check-chat-layout"
+        )
+    }) {
         let measure = args[1] == "--measure-renderer";
         if args.iter().any(|arg| arg == "--desktop-gl") {
             slint::BackendSelector::new()
@@ -789,6 +858,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .select()?;
         }
         let ui = AppWindow::new()?;
+        if args[1] == "--check-chat-layout" {
+            // Native layout regression smoke test; no account, network or tools.
+            ui.set_has_chat(true);
+            ui.set_draft("Prompt de prueba".into());
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(100), move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_draft("".into());
+                    ui.set_chat_running(true);
+                }
+            });
+        }
         let rendered = Rc::new(std::cell::Cell::new(false));
         let observed = rendered.clone();
         let notifier = ui.window().set_rendering_notifier(move |state, api| {
@@ -1087,11 +1168,13 @@ fn build_app(
     git_ui::configure(&ui, supervisor.clone());
     prisma_ui::configure(&ui, supervisor.clone());
     docker_ui::configure(&ui, supervisor.clone());
+    execution_ui::configure(&ui, supervisor.clone(), store.root().to_path_buf());
     lint_ui::configure(&ui, supervisor.clone(), store.clone());
     terminal_ui::configure(&ui, supervisor.clone());
     usage_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
     http_ui::configure(&ui, store.clone(), supervisor.clone());
     captures_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
+    browser_flows_ui::configure(&ui, supervisor.clone(), store.root().to_path_buf());
     attachments_ui::configure(&ui, state.clone(), store.clone(), supervisor.clone());
     let logcat = logcat_ui::configure(&ui, supervisor.clone());
     explorer_ui::configure(&ui, supervisor.clone());
@@ -1221,7 +1304,9 @@ fn build_app(
     let weak = ui.as_weak();
     ui.on_window_close(move || {
         close_cleanup();
-        if let Some(ui) = weak.upgrade() { let _ = ui.hide(); }
+        if let Some(ui) = weak.upgrade() {
+            let _ = ui.hide();
+        }
     });
 
     let weak = ui.as_weak();
@@ -1317,6 +1402,59 @@ fn build_app(
         ui.set_draft("".into());
         save_and_refresh(&ui, &mut state, &disk);
         scroll_opened_chat(&ui);
+    });
+
+    let weak = ui.as_weak();
+    let data = state.clone();
+    let disk = store.clone();
+    ui.on_delete_chat(move |id| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let Ok(id) = id.parse::<u64>() else {
+            return;
+        };
+        let title = {
+            let state = data.borrow();
+            let Some(chat) = state.chat(id) else {
+                return;
+            };
+            chat.title.clone()
+        };
+        if rfd::MessageDialog::new()
+            .set_title("Eliminar chat")
+            .set_description(format!(
+                "¿Eliminar «{title}» y su historial local? Esta acción no se puede deshacer."
+            ))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show()
+            != rfd::MessageDialogResult::Yes
+        {
+            return;
+        }
+        let mut state = data.borrow_mut();
+        preserve_composer(&ui, &mut state);
+        let mut next = state.clone();
+        if let Err(error) = next.delete_chat(id) {
+            ui.set_notice(error.into());
+            return;
+        }
+        if let Some(selected) = next.selected_chat {
+            if let Err(error) = disk.hydrate(&mut next, selected) {
+                ui.set_notice(format!("No se pudo cargar el siguiente chat: {error}").into());
+                return;
+            }
+        }
+        if let Err(error) = disk.save(&next) {
+            ui.set_notice(format!("No se pudo eliminar el chat: {error}").into());
+            return;
+        }
+        *state = next;
+        disk.release_inactive(&mut state);
+        ui.set_draft("".into());
+        ui.set_notice("Chat eliminado.".into());
+        refresh(&ui, &state);
     });
 
     let weak = ui.as_weak();
@@ -1805,9 +1943,13 @@ fn configure_runtime_callbacks(
         let service = supervisor.clone();
         let data = state.clone();
         move || {
-            let Some(ui) = weak.upgrade() else { return; };
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
             let mut state = data.borrow_mut();
-            let Some(id) = state.selected_chat else { return; };
+            let Some(id) = state.selected_chat else {
+                return;
+            };
             let key = id.to_string();
             let mut ids = ui.get_auto_approve_chats().iter().collect::<Vec<_>>();
             let enable = !ids.iter().any(|value| value.as_str() == key);
@@ -1962,7 +2104,11 @@ fn configure_runtime_callbacks(
                 }
             }
             Event::Approval { chat, description } => {
-                if ui.get_auto_approve_chats().iter().any(|value| value.as_str() == chat.to_string()) {
+                if ui
+                    .get_auto_approve_chats()
+                    .iter()
+                    .any(|value| value.as_str() == chat.to_string())
+                {
                     supervisor.approve(chat, true);
                     if let Some(chat) = state.chat_mut(chat) {
                         chat.approval.clear();
@@ -1970,11 +2116,11 @@ fn configure_runtime_callbacks(
                         chat.last_status = "Acción aprobada automáticamente para este chat.".into();
                     }
                 } else {
-                if let Some(chat) = state.chat_mut(chat) {
-                    chat.approval = description;
-                    chat.state = RunState::WaitingForPermission;
-                    chat.last_status = "Codex espera tu aprobación en este chat.".into();
-                }
+                    if let Some(chat) = state.chat_mut(chat) {
+                        chat.approval = description;
+                        chat.state = RunState::WaitingForPermission;
+                        chat.last_status = "Codex espera tu aprobación en este chat.".into();
+                    }
                 }
             }
             Event::ToolResult {
@@ -2539,9 +2685,12 @@ mod tests {
     fn chat_scroll_reaches_settled_bottom_on_open_and_idle_message() {
         slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
             i_slint_backend_testing::TestingBackendOptions {
-                renderer_name: Some("software".into()), mock_time: true, ..Default::default()
+                renderer_name: Some("software".into()),
+                mock_time: true,
+                ..Default::default()
             },
-        ))).unwrap();
+        )))
+        .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let store = Rc::new(Store::new(temp.path().join("data")).unwrap());
         let state = Rc::new(RefCell::new(AppState::default()));
@@ -2552,7 +2701,12 @@ mod tests {
         ui.set_displayed_chat_key("first".into());
         let row = |lines: usize| {
             let body = "A line of agent response.\n".repeat(lines);
-            MessageRow { role: "Asistente".into(), blocks: markdown_ui::blocks("Asistente", &body), summary: body.lines().next().unwrap_or_default().into(), body: body.into() }
+            MessageRow {
+                role: "Asistente".into(),
+                blocks: markdown_ui::blocks("Asistente", &body),
+                summary: body.lines().next().unwrap_or_default().into(),
+                body: body.into(),
+            }
         };
         let rows = Rc::new(VecModel::from((0..12).map(|_| row(12)).collect::<Vec<_>>()));
         ui.set_messages(ModelRc::from(rows.clone()));
@@ -2563,17 +2717,23 @@ mod tests {
             i_slint_backend_testing::testing_backend::mock_elapsed_time(20);
         };
         scroll_opened_chat(&ui);
-        for _ in 0..4 { tick(); }
+        for _ in 0..4 {
+            tick();
+        }
         // A late height update must not leave the scroll at the previous bottom.
         rows.set_row_data(11, row(90));
-        for _ in 0..65 { tick(); }
+        for _ in 0..65 {
+            tick();
+        }
         assert!(ui.get_chat_scroll_bottom() < -100.0);
         assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
         assert!(!ui.get_chat_follow_pending());
         // Final messages must follow even though the task is no longer running.
         follow_chat_update(&ui);
         rows.push(row(35));
-        for _ in 0..65 { tick(); }
+        for _ in 0..65 {
+            tick();
+        }
         assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
         // Returning from another workspace tab requests a fresh settled scroll.
         ui.set_usage_open(true);
@@ -2581,11 +2741,55 @@ mod tests {
         ui.set_usage_open(false);
         ui.set_displayed_chat_key("second".into());
         scroll_opened_chat(&ui);
-        for _ in 0..65 { tick(); }
+        for _ in 0..65 {
+            tick();
+        }
         assert!((ui.get_chat_scroll_offset() - ui.get_chat_scroll_bottom()).abs() < 2.0);
         assert!(!ui.get_chat_follow_pending());
         assert!(!ui.get_chat_opening_scroll());
     }
+    #[test]
+    fn chat_running_indicator_renders_without_recursive_layout() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions {
+                renderer_name: Some("software".into()),
+                mock_time: true,
+                ..Default::default()
+            },
+        )))
+        .unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.set_has_chat(true);
+        ui.set_selected_agent_configured(true);
+        ui.show().unwrap();
+        for width in [1280, 860] {
+            ui.window()
+                .set_size(slint::LogicalSize::new(width as f32, 820.0));
+            ui.set_draft("Prompt de prueba".into());
+            ui.set_chat_running(false);
+            ui.window().take_snapshot().unwrap();
+            ui.set_draft("".into());
+            ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
+                role: "Vos".into(),
+                body: "Prompt de prueba".into(),
+                blocks: markdown_ui::blocks("Vos", "Prompt de prueba"),
+                summary: "".into(),
+            }])));
+            ui.set_chat_running(true);
+            for _ in 0..3 {
+                i_slint_backend_testing::testing_backend::mock_elapsed_time(100);
+                let snapshot = ui.window().take_snapshot().unwrap();
+                assert!(snapshot.width() > 0 && snapshot.height() > 0);
+            }
+            ui.set_approval_description("Acción pendiente".into());
+            ui.window().take_snapshot().unwrap();
+            ui.set_approval_description("".into());
+            ui.set_chat_running(false);
+            ui.window().take_snapshot().unwrap();
+        }
+        ui.hide().unwrap();
+    }
+
     #[test]
     fn ui_navigation_preserves_drafts_and_sessions_and_renders() {
         slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
@@ -3141,7 +3345,10 @@ mod tests {
         let _ = ui.window().take_snapshot().unwrap();
         i_slint_backend_testing::testing_backend::mock_elapsed_time(40);
         let _ = ui.window().take_snapshot().unwrap();
-        assert!(ui.get_chat_follow_pending(), "Follow waits for virtualized layout to settle");
+        assert!(
+            ui.get_chat_follow_pending(),
+            "Follow waits for virtualized layout to settle"
+        );
         i_slint_backend_testing::testing_backend::mock_elapsed_time(200);
         let _ = ui.window().take_snapshot().unwrap();
         assert!(ui.get_chat_scroll_bottom() < before);
@@ -3806,6 +4013,26 @@ mod tests {
             ui.get_side_panel_visible_width(),
             ui.get_side_panel_max_width()
         );
+        // Every selectable side panel must expose the same resize handle.
+        for panel_index in 1..=11 {
+            ui.invoke_select_panel(panel_index);
+            ui.set_side_panel_width(310.0);
+            let _ = ui.window().take_snapshot().unwrap();
+            i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
+            let _ = ui.window().take_snapshot().unwrap();
+            assert_eq!(ui.get_active_panel_index(), panel_index);
+            drag_panel(-60.0);
+            assert!(
+                (ui.get_side_panel_visible_width() - 370.0).abs() < 2.0,
+                "El panel {panel_index} debe poder ensancharse arrastrando su borde"
+            );
+            drag_panel(60.0);
+            assert!(
+                (ui.get_side_panel_visible_width() - 310.0).abs() < 2.0,
+                "El panel {panel_index} debe poder reducirse arrastrando su borde"
+            );
+        }
+        ui.invoke_select_panel(0);
         ui.set_side_panel_width(310.0);
         ui.set_files_open(false);
         i_slint_backend_testing::testing_backend::mock_elapsed_time(250);
@@ -3992,7 +4219,8 @@ mod tests {
         let table_body = "### Tecnología del proyecto\n\nEl harness usa **Rust + Slint**.\n\n| Área | Tecnología | Evidencia |\n| :--- | :---: | --- |\n| Lenguaje | **Rust 2024** | `Cargo.toml` define la edición del proyecto. |\n| Interfaz | **Slint 1.18.1** | `ui/app.slint` contiene los componentes y estilos. |\n| Persistencia | JSON | `src/storage.rs` guarda mensajes localmente. |\n\n### Verificación\n\n- **Tabla interpretada**, con formato dentro de las celdas.\n- Texto posterior conservado.";
         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
             role: "Codex".into(),
-            summary: table_body.lines().next().unwrap_or_default().into(), body: table_body.into(),
+            summary: table_body.lines().next().unwrap_or_default().into(),
+            body: table_body.into(),
             blocks: markdown_ui::blocks("Codex", table_body),
         }])));
         for _ in 0..3 {

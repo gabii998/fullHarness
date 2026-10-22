@@ -10,10 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub variables: BTreeMap<String, String>,
     pub collections: Vec<Collection>,
+    #[serde(default = "timeout")]
+    pub timeout_seconds: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Collection {
@@ -33,11 +35,18 @@ pub struct Request {
     pub headers: String,
     #[serde(default)]
     pub body: String,
-    #[serde(default = "timeout")]
-    pub timeout_seconds: u64,
 }
 fn timeout() -> u64 {
     30
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            variables: BTreeMap::new(),
+            collections: Vec::new(),
+            timeout_seconds: timeout(),
+        }
+    }
 }
 impl Default for Request {
     fn default() -> Self {
@@ -48,7 +57,6 @@ impl Default for Request {
             url: "{{BASE_URL}}/".into(),
             headers: String::new(),
             body: String::new(),
-            timeout_seconds: 30,
         }
     }
 }
@@ -83,6 +91,9 @@ pub fn load(data: &Path, project: &Path) -> Result<Config, String> {
     Ok(config)
 }
 pub fn validate(config: &Config) -> Result<(), String> {
+    if !(1..=120).contains(&config.timeout_seconds) {
+        return Err("El timeout del proyecto debe estar entre 1 y 120 segundos.".into());
+    }
     if config.collections.len() > 50 || config.variables.len() > 128 {
         return Err("Límite: 50 colecciones y 128 variables por proyecto.".into());
     }
@@ -117,7 +128,6 @@ pub fn validate(config: &Config) -> Result<(), String> {
                 || r.url.len() > 8192
                 || r.headers.len() > 16384
                 || r.body.len() > 65536
-                || !(1..=120).contains(&r.timeout_seconds)
                 || !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
                     .contains(&r.method.as_str())
             {
@@ -230,7 +240,7 @@ pub fn prepare(
         url,
         headers,
         body,
-        timeout_seconds: r.timeout_seconds,
+        timeout_seconds: config.timeout_seconds,
     })
 }
 pub fn exposed(config: &Config) -> Value {

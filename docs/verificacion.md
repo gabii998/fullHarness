@@ -8,6 +8,10 @@ cargo test --offline
 cargo build --offline
 ```
 
+`cargo run --offline -- --check-chat-layout` abre brevemente una ventana con
+el renderizador nativo y cambia el chat de inactivo a ejecutándose para comprobar
+el layout del indicador de espera. No carga credenciales ni genera solicitudes.
+
 Las pruebas cubren navegación y borradores, persistencia, migración de preferencias, deduplicación de consumo, retornos OAuth inválidos, cifrado de credenciales, streaming fragmentado, límites de herramientas y cancelación de comandos. Una prueba con servidor HTTP local verifica el ciclo completo: solicitud de escritura, espera de aprobación, ejecución de nuestra herramienta, respuesta mínima y uso separado de cada generación. No utiliza una cuenta real ni consume inferencia. La prueba de UI genera `target/ui-preview.png` y `target/ui-settings-preview.png` con el renderizador software.
 
 El 9 de octubre de 2026 se verificó el acceso nativo con una cuenta real:

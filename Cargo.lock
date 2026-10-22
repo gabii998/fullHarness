@@ -269,6 +269,7 @@ dependencies = [
  "jsonwebtoken",
  "portable-pty",
  "pulldown-cmark",
+ "regex",
  "reqwest",
  "rfd",
  "roxmltree",

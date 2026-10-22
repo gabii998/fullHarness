@@ -397,6 +397,26 @@ impl AppState {
         }
     }
 
+    /// Remove a stopped chat and its navigation; task run summaries remain historical.
+    pub fn delete_chat(&mut self, id: Id) -> Result<(), String> {
+        let chat = self.chat(id).ok_or("El chat ya no está disponible.")?;
+        if matches!(
+            chat.state,
+            RunState::Running | RunState::WaitingForInput | RunState::WaitingForPermission
+        ) || self
+            .projects
+            .iter()
+            .any(|p| p.queue.as_ref().is_some_and(|q| q.active_chat == Some(id)))
+        {
+            return Err("Detené la ejecución del chat antes de eliminarlo.".into());
+        }
+        self.close_tab(id);
+        for project in &mut self.projects {
+            project.chats.retain(|chat| chat.id != id);
+        }
+        Ok(())
+    }
+
     /// A fresh process cannot assume a persisted execution is still alive.
     pub fn reconcile_after_restart(&mut self) {
         for chat in self.projects.iter_mut().flat_map(|p| &mut p.chats) {
